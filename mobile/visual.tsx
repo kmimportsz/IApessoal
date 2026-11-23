@@ -40,7 +40,7 @@ export function IconButton({ name, label, onPress, accent = false, disabled = fa
 
 export type AvatarState = 'neutral' | 'listening' | 'thinking' | 'speaking' | 'offline';
 const statusColors = {neutral: '#68C7A7', listening: '#97C7FF', thinking: '#74A9FF', speaking: '#B5A3FF', offline: '#8190A8'};
-export const avatarChoices = ['Órbita','Minimalista','Explorador','Clássico'] as const;
+export const avatarChoices = ['Órbita','Minimalista','Explorador','Pulso','Neblina','Clássico'] as const;
 export type AvatarChoice = typeof avatarChoices[number];
 export function Avatar({ state = 'neutral', small = false, ring = palette.blueDark, choice = 'Clássico', photo }: {
   state?: AvatarState; small?: boolean; ring?: string; choice?: AvatarChoice; photo?: string;
@@ -52,6 +52,12 @@ export function Avatar({ state = 'neutral', small = false, ring = palette.blueDa
         {choice === 'Órbita' ? <>
           <Circle cx="32" cy="32" r="14" fill="#729EE6"/>
           <Path d="M9 37C26 16 58 15 55 27C52 42 17 53 9 37Z" stroke="#D0E5FF" strokeWidth="3" fill="none"/>
+        </> : choice === 'Pulso' ? <>
+          <Circle cx="32" cy="32" r="22" fill="#243E72"/>
+          <Path d="M9 33h13l5-12 8 23 6-11h14" stroke="#7AC8FF" strokeWidth="4" fill="none"/>
+        </> : choice === 'Neblina' ? <>
+          <Circle cx="27" cy="34" r="17" fill="#4A75AE"/><Circle cx="39" cy="28" r="13" fill="#94B8DF"/>
+          <Path d="M11 45h42M17 50h29" stroke="#BBCFEB" strokeWidth="2" fill="none"/>
         </> : choice === 'Minimalista' ? <>
           <Rect x="15" y="20" width="34" height="26" rx="11" fill="#6096E4" />
           <Circle cx="26" cy="32" r="2" fill="#122846"/><Circle cx="38" cy="32" r="2" fill="#122846"/>

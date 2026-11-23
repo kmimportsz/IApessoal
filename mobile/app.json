@@ -2,7 +2,7 @@
   "expo": {
     "name": "Inteligência Pessoal Evolutiva",
     "slug": "inteligencia-pessoal-evolutiva",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "orientation": "portrait",
     "ios": {
       "bundleIdentifier": "app.ipe.personal"

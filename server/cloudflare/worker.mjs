@@ -1,3 +1,5 @@
+import { calculate, calculatorTool } from './calculator.mjs';
+import { searchPublic, searchLimit } from './research.mjs';
 import { identity, officialIdentity } from './persona.mjs';
 import { initiativeRoute, reviewProjects } from './initiative.mjs';
 import { setupPage } from './setup.mjs';
@@ -189,8 +191,18 @@ async function consume(env, body) {
       try {
         const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('deadline')), 180_000); });
         const messages = [{role: 'system', content: identity(model)}, {role: 'user', content: prompt}];
-        result = await Promise.race([env.AI.run(model.id, {messages, max_tokens: model.maxTokens, temperature: 0.6, stream: false}), deadline]);
-        outcome = interpret(result);
+        const math = /^(?:calcule|calculadora:)\s/i.test(prompt.split('\n\nMensagem atual:\n').at(-1).trim());
+        result = await Promise.race([env.AI.run(model.id, {messages, max_tokens: model.maxTokens, temperature: 0.6, stream: false,
+          ...(math ? {tools:[calculatorTool]} : {})}), deadline]);
+        const tool = math ? result?.choices?.[0]?.message?.tool_calls?.[0]?.function : undefined;
+        if (tool?.name === 'calculate') {
+          try {
+            const verified = calculate(JSON.parse(tool.arguments).expression);
+            outcome = {reply: 'Cálculo verificado: ' + verified.expression + ' = ' + verified.decimal +
+              (verified.rounded ? ' (aproximado; exato: ' + verified.exact + ').' : '.')};
+            await env.DB.prepare("INSERT OR IGNORE INTO tool_audit_v14 VALUES (?,'calculator','verified',?)").bind(id,Date.now()).run();
+          } catch { outcome={code:'calculation_invalid'}; }
+        } else outcome = interpret(result);
         const input = result?.usage?.prompt_tokens;
         const output = result?.usage?.completion_tokens;
         if (Number.isSafeInteger(input) && input > 0 && Number.isSafeInteger(output) && output > 0) accounted = neurons(model, input, output);
@@ -230,6 +242,25 @@ export default {
       }
       if (request.method === 'POST' && pathname === '/pair') return await pair(request, env);
       if (!await authorized(request, env)) return error('Credencial inválida.', 401);
+      if (request.method === 'POST' && pathname === '/tools/calculate') {
+        const data = await readJson(request,1024);
+        try { return json(calculate(data?.expression)); }
+        catch (failure) {return error(failure.message,400);}
+      }
+      if (request.method === 'POST' && pathname === '/research') {
+        const data=await readJson(request,2048);
+        const query=typeof data?.query==='string' ? data.query.trim() : '';
+        if (data?.authorized!==true || query.length<3 || query.length>140 || /@|https?:|\b\d{9,}\b/i.test(query)) {
+          return error('Confirme a pesquisa e use um tema público sem dados pessoais.',400);
+        }
+        const reserved=await env.DB.prepare(`
+          INSERT INTO research_usage(day,calls) VALUES (?,1) ON CONFLICT(day)
+          DO UPDATE SET calls=calls+1 WHERE calls<? RETURNING calls
+        `).bind(day,searchLimit).first();
+        if (!reserved) return error('Limite de pesquisas de hoje atingido.',402);
+        try {return json({...await searchPublic(query),dailyUsed:reserved.calls,dailyLimit:searchLimit});}
+        catch {return error('A fonte pública não respondeu. Tente mais tarde.',502);}
+      }
       if (pathname === '/initiative' || pathname.startsWith('/initiative/')) {
         return await initiativeRoute({path: pathname, method: request.method, db: env.DB,
           read: limit => readJson(request, limit), now: now.getTime(),

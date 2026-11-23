@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StatusBar,
+import { ActivityIndicator, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StatusBar, Share, Linking,
   StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useNetInfo } from '@react-native-community/netinfo';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { File, Paths } from 'expo-file-system';
-import { trackingGateway, useInitiatives, type Initiative } from './initiative';
+import { trackingGateway, useInitiatives, type Initiative, type Project } from './initiative';
 import { Avatar, Atmosphere, Icon, IconButton, avatarChoices, palette, type AvatarChoice, type AvatarState, type IconName } from './visual';
 import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
 import * as SecureStore from 'expo-secure-store';
@@ -16,12 +16,14 @@ import { requireOptionalNativeModule } from 'expo';
 import type { ExpoSpeechRecognitionModule as VoiceModule } from 'expo-speech-recognition';
 import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, preferenceCandidate, recentContext, relevantMemory, type Category, type Memory, type Route } from './core';
 import { audit, initialize } from './storage';
+import { exportMemories, importMemories, readBackup } from './backup';
 import { claimJobSql } from './outbox';
 
 const voice = requireOptionalNativeModule<typeof VoiceModule>('ExpoSpeechRecognition');
-const tabs = ['Conversa', 'Memórias', 'Laboratório', 'Ajustes'] as const;
+const tabs = ['Conversa', 'Projetos', 'Memórias', 'Laboratório', 'Ajustes'] as const;
 type Tab = typeof tabs[number];
-type Job = { id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; response_model?: string | null; recovery_state?: string | null; memory_id: string | null; memory_version: number | null };
+type Thread = {id:string;title:string;archived:number};
+type Job = { thread_id?:string; id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; response_model?: string | null; recovery_state?: string | null; memory_id: string | null; memory_version: number | null };
 type Entry = { id: number; created: number; event: string };
 type Usage = { month: string; limit: number; reserved: number; inputTokens: number; outputTokens: number; paid: boolean; local: boolean; localLabel?: string; dailyLimit?: number; dailyUsed?: number; neuronLimit?: number; neuronsUsed?: number };
 const labels: Record<string, string> = { queued: 'Na fila', sending: 'Enviando', uncertain: 'Envio incerto',
@@ -49,6 +51,7 @@ function Field({ label, value, change, multiline = false, secret = false, max = 
 }
 
 const oldGateway = 'https://iapessoal-gateway-v11.km-prospect-ai-app.workers.dev';
+const previousGateway = 'https://iapessoal-gateway-v13.km-prospect-ai-app.workers.dev';
 const recoveryGateway = 'https://iapessoal-gateway-v121.km-prospect-ai-app.workers.dev';
 const upgradedGateway = 'https://iapessoal-gateway-v12.km-prospect-ai-app.workers.dev';
 type Receipt = {id?: string; state?: string; reply?: string; error?: string; model?: string;
@@ -78,7 +81,7 @@ const receiptCodes: Record<string, string> = {
   response_storage_error: 'A inferência foi executada, mas o gateway não confirmou o armazenamento.',
   response_too_large: 'A resposta ultrapassou o limite de armazenamento temporário.',
 };
-const tabIcons: Record<Tab, IconName> = {Conversa: 'chat', Memórias: 'layers', Laboratório: 'flask', Ajustes: 'settings'};
+const tabIcons: Record<Tab, IconName> = {Conversa: 'chat', Projetos: 'layers', Memórias: 'layers', Laboratório: 'flask', Ajustes: 'settings'};
 const connectionLabels = {unconfigured: 'Modo local', offline: 'Offline', checking: 'Verificando modelo',
   unreachable: 'Servidor indisponível', disabled: 'Modelo desativado', auth: 'Credencial recusada', online: 'Gateway online'};
 type ChatRow = { key: string; date: number; kind: 'date' | 'prompt' | 'reply'; job?: Job };
@@ -93,6 +96,20 @@ export default function App() {
 
 function PersonalApp() {
   const [db, setDb] = useState<SQLiteDatabase>();
+  const [threads,setThreads]=useState<Thread[]>([]);
+  const [threadId,setThreadId]=useState('principal');
+  const threadDrafts=useRef(new Map<string,string>());
+  const [threadPanel,setThreadPanel]=useState(false);
+  const [threadTitle,setThreadTitle]=useState('');
+  const [showArchived,setShowArchived]=useState(false);
+  const [researchQuery,setResearchQuery]=useState('');
+  const [research,setResearch]=useState<{searchedAt:string; dailyUsed:number; dailyLimit:number; results:{title:string;description:string;url:string}[]}>();
+  const [researchAllowed,setResearchAllowed]=useState(true);
+  const [researching,setResearching]=useState(false);
+  const [expression,setExpression]=useState('');
+  const [calculated,setCalculated]=useState('');
+  const [backupKey,setBackupKey]=useState('');
+  const [backupText,setBackupText]=useState('');
   const [tab, setTab] = useState<Tab>('Conversa');
   const [notice, setNotice] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -140,6 +157,10 @@ function PersonalApp() {
   const [avatarChoice, setAvatarChoice] = useState<AvatarChoice>('Clássico');
   const [avatarPhoto, setAvatarPhoto] = useState<string>();
   const [voiceRate, setVoiceRate] = useState(1);
+  const [projectEdit,setProjectEdit]=useState<Project>();
+  const [profileName,setProfileName]=useState('');
+  const [profileStyle,setProfileStyle]=useState('');
+  const [profileAttached,setProfileAttached]=useState(false);
   const [projectTitle, setProjectTitle] = useState('');
   const [projectPending, setProjectPending] = useState('');
   const [projectMinutes, setProjectMinutes] = useState('60');
@@ -152,17 +173,21 @@ function PersonalApp() {
   const startup = useRef<Promise<SQLiteDatabase> | null>(null);
 
   const refresh = useCallback(async (store: SQLiteDatabase) => {
-    const [mem, queue, log, runs, options, history] = await Promise.all([
+    const [mem, queue, log, runs, options, history, conversations] = await Promise.all([
       store.getAllAsync<Memory>('SELECT * FROM memory ORDER BY updated DESC'),
       store.getAllAsync<Job>('SELECT * FROM outbox ORDER BY created, id'),
       store.getAllAsync<Entry>('SELECT * FROM audit ORDER BY id DESC LIMIT 25'),
       store.getAllAsync<{id: number; result: string}>('SELECT * FROM experiments ORDER BY id DESC LIMIT 20'),
       store.getAllAsync<{key: string; value: string}>('SELECT * FROM options'),
       store.getAllAsync<MemoryRevision>('SELECT * FROM memory_history ORDER BY changed DESC'),
+      store.getAllAsync<Thread>('SELECT * FROM conversations ORDER BY archived,title'),
     ]);
     const prefs = Object.fromEntries(options.map(item => [item.key, item.value]));
     setMemories(mem); setJobs(queue); setEntries(log); setResults(runs); setRevisions(history);
     setVersion(Number(prefs.search ?? 1));
+    setThreads(conversations);
+    setResearchAllowed(prefs.researchAllowed!=='no');
+    setProfileName(prefs.profileName ?? '');setProfileStyle(prefs.profileStyle ?? '');
     setPortrait(prefs.portrait ?? palette.blueDark);
     setAvatarChoice(avatarChoices.includes(prefs.avatarChoice as AvatarChoice) ? prefs.avatarChoice as AvatarChoice : 'Clássico');
     setAvatarPhoto(/^avatar-[a-f0-9-]+\.jpg$/i.test(prefs.avatarPhoto ?? '') ? prefs.avatarPhoto : undefined);
@@ -261,19 +286,21 @@ function PersonalApp() {
   }, [context, prompt, memories, dismissedMemory]);
   const suggestedRecent = useMemo(() => {
     if (context || prompt === ignoredRecent) return undefined;
-    const previous = [...jobs].reverse().find(job => job.state === 'done' && !!job.reply);
+    const previous = [...jobs].reverse().find(job => (job.thread_id ?? 'principal') === threadId && job.state === 'done' && !!job.reply);
     return recentContext(prompt, previous);
-  }, [context, prompt, ignoredRecent, jobs]);
+  }, [context, prompt, ignoredRecent, jobs, threadId]);
   const newestInitiative = tracking?.enabled ? tracking.initiatives.find(event => event.state === 'new') : undefined;
   const photoUri = avatarPhoto ? new File(Paths.document, avatarPhoto).uri : undefined;
-  const draftTooLong = messageForQueue(prompt, context).length > 6000;
+  const approvedContext = [context,profileAttached ? ['Preferências autorizadas',profileName && 'Nome: '+profileName,profileStyle && 'Estilo: '+profileStyle].filter(Boolean).join(' · ') : ''].filter(Boolean).join('\n');
+  const draftTooLong = messageForQueue(prompt, approvedContext).length > 6000;
   const freeLabel = probe?.usage?.localLabel ?? 'Ollama';
   const avatarState: AvatarState = listening ? 'listening' : busy ? 'thinking' : speaking ? 'speaking' :
     state === 'offline' || state === 'unreachable' ? 'offline' : 'neutral';
   const rows = useMemo(() => {
     const items: ChatRow[] = [];
     for (const job of jobs) {
-      if (chatQuery.trim() && !matches(job.prompt + ' ' + (job.reply ?? ''), chatQuery.trim(), 2)) continue;
+      if ((job.thread_id ?? 'principal') !== threadId) continue;
+      if (chatQuery.trim() && !matches(job.prompt + ' ' + (job.reply ?? '') + ' ' + formatDate(job.created), chatQuery.trim(), 2)) continue;
       items.push({key: job.id + ':p', kind: 'prompt', date: job.created, job});
       if (job.reply) items.push({key: job.id + ':r', kind: 'reply', date: job.reply_at ?? job.created, job});
     }
@@ -287,7 +314,7 @@ function PersonalApp() {
       previous = day;
     }
     return result;
-  }, [jobs, chatQuery]);
+  }, [jobs, chatQuery, threadId]);
 
   async function perform(action: () => Promise<void>) {
     try { await action(); }
@@ -364,7 +391,7 @@ function PersonalApp() {
 
   async function queue() {
     if (!db || !prompt.trim() || queueLock.current) return;
-    const message = messageForQueue(prompt, context);
+    const message = messageForQueue(prompt, approvedContext);
     if (message.length > 6000) throw new Error('O total da mensagem e do contexto deve ter até 6.000 caracteres.');
     queueLock.current = true;
     try {
@@ -375,14 +402,14 @@ function PersonalApp() {
           throw new Error('A memória escolhida mudou ou ficou privada. Selecione o contexto novamente.');
         }
       }
-      const job: Job = {id: randomUUID(), prompt: message, route, url: settings.url, state: 'queued',
+      const job: Job = {id: randomUUID(), prompt: message, route, url: settings.url, thread_id: threadId, state: 'queued',
         created: Date.now(), reply: null, reply_at: null, memory_id: contextMemory?.id ?? null,
         memory_version: contextMemory?.version ?? null};
-      await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version) VALUES (?,?,?,?,?,?,?)',
-        job.id, job.prompt, job.route, job.url, job.created, job.memory_id, job.memory_version);
+      await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version,thread_id) VALUES (?,?,?,?,?,?,?,?)',
+        job.id, job.prompt, job.route, job.url, job.created, job.memory_id, job.memory_version, threadId);
       const candidate = preferenceCandidate(prompt);
       setPreference(candidate && !memories.some(item => item.kind === 'Preferência' && memoryKey(item.body) === memoryKey(candidate)) ? candidate : undefined);
-      setPrompt(''); setDismissedMemory(undefined); clearContext();
+      setPrompt(''); setDismissedMemory(undefined); setProfileAttached(false);clearContext();
       nearEnd.current = true;
       await audit(db, 'Mensagem adicionada à fila');
       await refresh(db);
@@ -417,7 +444,7 @@ function PersonalApp() {
       }
       if (response.ok && typeof data.reply === 'string') {
         await saveReply(db, job.id, data);
-      } else if (response.ok && data.state && [recoveryGateway,trackingGateway].includes(settings.url)) {
+      } else if (response.ok && data.state && [recoveryGateway,previousGateway,trackingGateway].includes(settings.url)) {
         await db.runAsync("UPDATE outbox SET state='uncertain', recovery_state=? WHERE id=?",
           data.state === 'finished' ? 'unavailable' : data.state, job.id);
       } else {
@@ -446,7 +473,7 @@ function PersonalApp() {
 
   const verifyReply = useCallback(async (job: Job, manual: boolean) => {
     if (!db || connected === false || checkingJobs.current.has(job.id)) return;
-    if (![recoveryGateway,trackingGateway].includes(settings.url) || ![recoveryGateway,upgradedGateway,trackingGateway].includes(job.url) || (job.url === trackingGateway && settings.url !== trackingGateway)) {
+    if (![recoveryGateway,previousGateway,trackingGateway].includes(settings.url) || ![recoveryGateway,upgradedGateway,previousGateway,trackingGateway].includes(job.url) || (job.url === trackingGateway && settings.url !== trackingGateway)) {
       if (manual) setNotice('A recuperação por ID está disponível no gateway 1.2.1.');
       return;
     }
@@ -454,7 +481,7 @@ function PersonalApp() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
     try {
-      const destination = job.url === recoveryGateway ? recoveryGateway : settings.url;
+      const destination = [recoveryGateway,previousGateway].includes(job.url) ? job.url : settings.url;
       const response = await fetch(destination + '/requests/' + encodeURIComponent(job.id), {
         headers: {Authorization: 'Bearer ' + settings.token}, signal: controller.signal,
       });
@@ -478,15 +505,15 @@ function PersonalApp() {
   }, [db, connected, settings, refresh]);
 
   useEffect(() => {
-    if (!db || ![recoveryGateway,trackingGateway].includes(settings.url) || connected === false) return;
+    if (!db || ![recoveryGateway,previousGateway,trackingGateway].includes(settings.url) || connected === false) return;
     let active = true;
     let running = false;
     async function checkPending() {
       if (running || !active || ['background','inactive'].includes(AppState.currentState ?? 'active')) return;
       running = true;
       try {
-        const pending = await db!.getAllAsync<Job>(`SELECT * FROM outbox WHERE state='uncertain' AND url IN (?,?,?)
-          AND (recovery_state IS NULL OR recovery_state='processing') ORDER BY created DESC LIMIT 4`, recoveryGateway, upgradedGateway, settings.url);
+        const pending = await db!.getAllAsync<Job>(`SELECT * FROM outbox WHERE state='uncertain' AND url IN (?,?,?,?)
+          AND (recovery_state IS NULL OR recovery_state='processing') ORDER BY created DESC LIMIT 4`, recoveryGateway, upgradedGateway, previousGateway, settings.url);
         if (active) await Promise.all(pending.map(job => verifyReply(job, false)));
       } catch { /* The next foreground check can recover the result. */ }
       finally { running = false; }
@@ -499,12 +526,12 @@ function PersonalApp() {
 
   async function regenerate(job: Job) {
     if (!db || busy || networkLock.current) return;
-    if (job.url && job.url !== settings.url && !([upgradedGateway,recoveryGateway].includes(job.url) && [recoveryGateway,trackingGateway].includes(settings.url))) {
+    if (job.url && job.url !== settings.url && !([upgradedGateway,recoveryGateway,previousGateway].includes(job.url) && [recoveryGateway,previousGateway,trackingGateway].includes(settings.url))) {
       throw new Error('Selecione o gateway original antes de gerar outra resposta.');
     }
     const id = randomUUID();
-    await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version) VALUES (?,?,?,?,?,?,?)',
-      id, job.prompt, job.route, settings.url, Date.now(), job.memory_id, job.memory_version);
+    await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version,thread_id) VALUES (?,?,?,?,?,?,?,?)',
+      id, job.prompt, job.route, settings.url, Date.now(), job.memory_id, job.memory_version, job.thread_id ?? 'principal');
     await audit(db, 'Nova resposta solicitada');
     nearEnd.current = true;
     await refresh(db);
@@ -576,11 +603,32 @@ function PersonalApp() {
     await refresh(db);
   }
 
+  function openThread(id:string) {
+    threadDrafts.current.set(threadId,prompt);setPrompt(threadDrafts.current.get(id)??'');
+    setProfileAttached(false);setThreadId(id);setThreadPanel(false);setChatQuery('');clearContext();nearEnd.current=true;
+  }
+  async function saveThread(rename:boolean) {
+    if(!db || !threadTitle.trim()) return;
+    if(rename) await db.runAsync('UPDATE conversations SET title=? WHERE id=?',threadTitle.trim(),threadId);
+    else {const id=randomUUID();await db.runAsync('INSERT INTO conversations(id,title) VALUES (?,?)',id,threadTitle.trim());openThread(id);}
+    setThreadTitle('');await refresh(db);
+  }
+  async function deleteThread() {
+    if(!db || threadId==='principal') return;
+    await db.withExclusiveTransactionAsync(async tx=>{
+      const pending=await tx.getFirstAsync("SELECT id FROM outbox WHERE thread_id=? AND state IN ('queued','sending','uncertain') LIMIT 1",threadId);
+      if(pending) throw Error('Esta conversa ainda contém envios pendentes ou incertos.');
+      await tx.runAsync('DELETE FROM outbox WHERE thread_id=?',threadId);
+      await tx.runAsync('DELETE FROM conversations WHERE id=?',threadId);
+    });
+    openThread('principal');await refresh(db);
+  }
+
   function useInitiative(item: Initiative) {
     setPrompt('Vamos revisar o objetivo “' + item.title + '”. Pendência: ' + item.pending);
     clearContext();
     go('Conversa');
-    void perform(() => change('/initiative/events','POST',{id:item.id,state:'read'}));
+    void perform(() => change('/initiative/events','POST',{id:item.id,cycle:item.cycle,state:'read'}));
   }
 
   function speak(reply: string) {
@@ -648,6 +696,8 @@ function PersonalApp() {
             onPress={() => confirm('Gerar outra resposta?', 'O texto e o contexto originais serão enviados novamente. Cada nova resposta usa uma tentativa.',
               () => regenerate(job))} style={s.inlineAction}>
             <Text style={s.link}>Gerar novamente</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={()=>confirm('Compartilhar resposta?', 'O texto será entregue à opção que você escolher no painel do aparelho.',
+            async()=>{await Share.share({message:content});})} style={s.inlineAction}><Text style={s.link}>Compartilhar</Text></Pressable>
         </View>}
         {!isReply && job.state === 'queued' && <Pressable accessibilityRole="button" disabled={busy || connected === false || !settings.url}
           style={s.inlineAction} onPress={() => confirmSend(job)}>
@@ -704,6 +754,24 @@ function PersonalApp() {
         <Text style={s.notice} accessibilityLiveRegion="polite">{notice}</Text>
       </Pressable>}
       {tab === 'Conversa' ? <View style={s.flex}>
+        <Pressable accessibilityRole="button" onPress={()=>setThreadPanel(!threadPanel)}>
+          <Text style={[s.label,{paddingHorizontal:16,paddingVertical:8}]}>{threads.find(t=>t.id===threadId)?.title ?? 'Histórico principal'} · Conversas</Text>
+        </Pressable>
+        {threadPanel && <View style={[s.card,{marginHorizontal:12,maxHeight:270}]}><ScrollView keyboardShouldPersistTaps="handled">
+          <Field label="Nome de conversa" value={threadTitle} change={setThreadTitle} max={80} />
+          <View style={s.row}>
+            <Button label="Criar" onPress={()=>void perform(()=>saveThread(false))}/>
+            <Button label="Renomear atual" onPress={()=>void perform(()=>saveThread(true))}/>
+            <Button label={showArchived?'Ver ativas':'Ver arquivadas'} onPress={()=>setShowArchived(!showArchived)}/>
+          </View>
+          {threads.filter(t=>!!t.archived===showArchived).map(t=><Button key={t.id} label={t.title} primary={t.id===threadId} onPress={()=>openThread(t.id)}/>)}
+          {threadId!=='principal' && <View style={s.row}>
+            <Button label={threads.find(t=>t.id===threadId)?.archived?'Desarquivar':'Arquivar'} onPress={()=>void perform(async()=>{
+              await db.runAsync('UPDATE conversations SET archived=1-archived WHERE id=?',threadId);openThread('principal');await refresh(db);
+            })}/>
+            <Button label="Excluir conversa" onPress={()=>confirm('Excluir conversa?', 'As mensagens concluídas desta conversa serão removidas do aparelho. Envios pendentes impedem a exclusão.',deleteThread)}/>
+          </View>}
+        </ScrollView></View>}
         {searchOpen && <TextInput style={[s.input, s.search]} autoFocus accessibilityLabel="Pesquisar conversas"
           placeholder="Buscar nas conversas" placeholderTextColor={palette.muted} value={chatQuery} onChangeText={setChatQuery} />}
         <FlatList ref={chat} style={s.flex} data={rows} keyExtractor={item => item.key} renderItem={renderChat}
@@ -727,7 +795,7 @@ function PersonalApp() {
               <Text style={s.text}>{newestInitiative.pending}</Text>
               <View style={s.row}>
                 <Button label="Revisar na conversa" onPress={() => useInitiative(newestInitiative)} />
-                <Button label="Dispensar" onPress={() => void perform(() => change('/initiative/events','POST',{id:newestInitiative.id,state:'dismissed'}))} />
+                <Button label="Dispensar" onPress={() => void perform(() => change('/initiative/events','POST',{id:newestInitiative.id,cycle:newestInitiative.cycle,state:'dismissed'}))} />
               </View>
             </View>}
             {!!suggestedRecent && <View style={s.card}>
@@ -763,6 +831,7 @@ function PersonalApp() {
                 <Button label="Ignorar" onPress={() => setDismissedMemory(suggestedMemory.id)} />
               </View>
             </View>}
+            {profileAttached && <Text style={s.muted}>Perfil autorizado neste envio: {[profileName,profileStyle].filter(Boolean).join(' · ')}</Text>}
             {!!context && <View style={s.card}>
               <Text style={s.kicker}>CONTEXTO DO PRÓXIMO ENVIO</Text>
               <Text style={s.text} selectable>{context}</Text>
@@ -776,6 +845,7 @@ function PersonalApp() {
               <Button label={freeLabel} primary={route === 'local'} onPress={() => { setRoute('local'); setMenu(false); }} />
               <Button label="OpenAI · pago" primary={route === 'paid'} onPress={() => { setRoute('paid'); setMenu(false); }} />
               <Button label="Usar uma memória" onPress={() => go('Memórias')} />
+              {!!(profileName || profileStyle) && <Button label={profileAttached?'Retirar perfil deste envio':'Incluir meu perfil neste envio'} onPress={()=>setProfileAttached(!profileAttached)}/>}
             </View>
             {!!rows.length && <View style={s.row}>{shortcuts.map(item =>
               <Button key={item.label} label={item.label} onPress={item.action} />)}</View>}
@@ -842,7 +912,98 @@ function PersonalApp() {
           </View>
         </View>)}
       </>}
+      {tab === 'Projetos' && <>
+        <Text style={s.title}>Projetos</Text>
+        <View style={s.card}><Text style={s.section}>Objetivos acompanhados</Text>
+          {tracking ? <>
+            <Text style={s.muted}>Nível 2 · Revisões no servidor. As iniciativas chegam à conversa quando o app se conecta.</Text>
+            <Button label={tracking.enabled ? 'Pausar acompanhamento' : 'Autorizar acompanhamento'} onPress={() =>
+              confirm(tracking.enabled ? 'Pausar revisões?' : 'Autorizar revisões agendadas?',
+                'Somente os objetivos que você cadastrar aqui serão revisados pelo servidor. Use títulos e pendências que possa compartilhar.',
+                () => change('/initiative/permission','POST',{enabled:!tracking.enabled}))} />
+            {tracking.enabled && <>
+              <Field label="Título do objetivo" value={projectTitle} change={setProjectTitle} max={80} />
+              <Field label="Pendência a revisar" value={projectPending} change={setProjectPending} max={240} />
+              <Field label="Revisar em quantos minutos?" value={projectMinutes} change={setProjectMinutes} max={6} />
+              <Button primary label="Agendar revisão" onPress={() => void perform(async () => {
+                const minutes=Number(projectMinutes);
+                if (!Number.isInteger(minutes) || minutes<1 || minutes>525600) throw Error('Informe entre 1 e 525.600 minutos.');
+                if (!projectTitle.trim() || !projectPending.trim()) throw Error('Preencha o título e a pendência.');
+                confirm('Enviar objetivo para acompanhamento?', 'O título, a pendência e o horário serão armazenados no gateway.',
+                  async () => {
+                    await change('/initiative/projects','POST',{id:randomUUID(),title:projectTitle,pending:projectPending,due:Date.now()+minutes*60000});
+                    setProjectTitle('');setProjectPending('');
+                  });
+              })} />
+            </>}
+            {projectEdit && <View style={s.card}>
+              <Text style={s.section}>Editar {projectEdit.title}</Text>
+              <Field label="Descrição" value={projectEdit.description??''} change={description=>setProjectEdit({...projectEdit,description})} max={500}/>
+              <Field label="Objetivo" value={projectEdit.objective??''} change={objective=>setProjectEdit({...projectEdit,objective})} max={240}/>
+              <View style={s.row}>
+                {[0,1,7,30].map(days=><Button key={days} label={days?days+' dias':'Uma vez'} primary={(projectEdit.frequencyDays??0)===days}
+                  onPress={()=>setProjectEdit({...projectEdit,frequencyDays:days})}/>)}
+              </View>
+              <View style={s.row}>
+                {['active','paused','done'].map(status=><Button key={status} label={{active:'Ativo',paused:'Pausado',done:'Concluído'}[status]??status}
+                  primary={(projectEdit.status??'active')===status} onPress={()=>setProjectEdit({...projectEdit,status})}/>)}
+                <Button label={projectEdit.priority==='high'?'Prioridade alta':'Prioridade normal'} onPress={()=>setProjectEdit({...projectEdit,priority:projectEdit.priority==='high'?'normal':'high'})}/>
+              </View>
+              <Button label="Salvar plano" onPress={()=>confirm('Salvar plano no gateway?', 'Descrição, objetivo, prioridade e frequência serão armazenados para acompanhamento.',async()=>{
+                await change('/initiative/details','POST',{id:projectEdit.id,description:projectEdit.description??'',objective:projectEdit.objective??'',
+                  status:projectEdit.status??'active',priority:projectEdit.priority??'normal',frequencyDays:projectEdit.frequencyDays??0});setProjectEdit(undefined);
+              })}/>
+              <Button label="Cancelar edição" onPress={()=>setProjectEdit(undefined)}/>
+            </View>}
+            {tracking.projects.map(item => <View key={item.id} style={s.card}>
+              <Text style={s.text}>{item.title}</Text><Text style={s.muted}>{item.pending} · {new Date(item.due).toLocaleString('pt-BR')}</Text>
+              <Text style={s.muted}>{item.frequencyDays ? 'Revisão a cada '+item.frequencyDays+' dias' : 'Revisão única'}</Text>
+              <Button label="Editar plano" disabled={!tracking.enabled} onPress={()=>setProjectEdit(item)}/>
+              <Button label="Analisar na conversa" onPress={()=>{setContext([item.title,item.description,item.objective,item.pending].filter(Boolean).join('\n'));setContextMemory(undefined);go('Conversa');}}/>
+              <Button label={item.active ? 'Pausar objetivo' : 'Retomar objetivo'} disabled={item.status==='paused'||item.status==='done'} onPress={() =>
+                void perform(() => change('/initiative/projects','PATCH',{id:item.id,active:!item.active}))} />
+              <Button label="Excluir objetivo" onPress={() => confirm('Excluir objetivo acompanhado?', 'A revisão e o registro vinculado serão removidos do gateway.',
+                () => change('/initiative/projects','DELETE',{id:item.id}))} />
+            </View>)}
+            {tracking.initiatives.map(item => <Pressable key={item.id+':'+(item.cycle??0)} accessibilityRole="button" onPress={() => useInitiative(item)}>
+              <Text style={s.label}>{item.title} · {item.state==='new'?'Nova':item.state==='read'?'Lida':'Dispensada'}</Text>
+              <Text style={s.muted}>{item.origin} · {item.urgency} · {new Date(item.occurred).toLocaleString('pt-BR')}</Text>
+            </Pressable>)}
+          </> : <Text style={s.muted}>Conecte-se ao gateway 1.4 da IA Pessoal para acompanhar objetivos.</Text>}
+        </View>
+      </>}
       {tab === 'Laboratório' && <>
+        <View style={s.card}><Text style={s.section}>Ferramentas</Text>
+          <Field label="Expressão aritmética" value={expression} change={setExpression} max={160}/>
+          <Button label="Calcular" disabled={!expression.trim() || settings.url!==trackingGateway} onPress={()=>void perform(async()=>{
+            const response=await request('/tools/calculate',{expression});const value=await response.json();
+            if(!response.ok) throw Error(value.error);setCalculated(value.expression+' = '+value.decimal+
+              (value.rounded?' · exato: '+value.exact:''));
+          })}/>
+          {!!calculated && <><Text style={s.text} selectable>{calculated}</Text><Button label="Usar cálculo na conversa" onPress={()=>{setContext('Resultado da calculadora: '+calculated);setContextMemory(undefined);go('Conversa');}}/></>}
+          <Button label={researchAllowed?'Desativar pesquisa':'Permitir pesquisa mediante confirmação'} onPress={()=>void perform(async()=>{
+            await option('researchAllowed',researchAllowed?'no':'yes');setResearch(undefined);await refresh(db);
+          })}/>
+          <Field label="Tema público para pesquisar" value={researchQuery} change={setResearchQuery} max={140}/>
+          <Button label={researching?'Pesquisando…':'Pesquisar na Wikipédia'} disabled={!researchAllowed || researching || researchQuery.trim().length<3 || settings.url!==trackingGateway} onPress={()=>
+            confirm('Autorizar consulta pública?', 'O tema digitado será enviado à Wikipédia. Use termos públicos e retire informações pessoais.',async()=>{
+              setResearching(true);setResearch(undefined);
+              try{const response=await request('/research',{query:researchQuery,authorized:true});const value=await response.json();
+                if(!response.ok) throw Error(value.error);setResearch(value);
+              }finally{setResearching(false);}
+            })}/>
+          {research && <>
+            <Text style={s.muted}>Wikipédia em português · {formatDate(Date.parse(research.searchedAt))} · {research.dailyUsed}/{research.dailyLimit} consultas</Text>
+            {!research.results.length && <Text style={s.muted}>Nenhuma página encontrada.</Text>}
+            {research.results.map(item=><Pressable accessibilityRole="link" key={item.url} onPress={()=>{if(item.url.startsWith('https://pt.wikipedia.org/wiki/')) void Linking.openURL(item.url);}}>
+              <Text style={s.link}>{item.title}</Text><Text style={s.muted}>{item.description}</Text>
+            </Pressable>)}
+            {!!research.results.length && <Button label="Incluir fontes na conversa" onPress={()=>{
+              setContext('Resultados de busca pública em '+research.searchedAt+':\n'+research.results.map(item=>item.title+' — '+item.url+' — '+item.description).join('\n'));
+              setContextMemory(undefined);go('Conversa');
+            }}/>}
+          </>}
+        </View>
         <Text style={s.title}>Laboratório</Text>
         <View style={s.card}>
           <Text style={s.kicker}>EXPERIMENTO DISPONÍVEL</Text>
@@ -864,7 +1025,7 @@ function PersonalApp() {
           {version === 1 && <Text style={s.muted}>↳ Busca v2 · Experimental</Text>}
           <Text style={s.text}>Conversa · Gateway necessário</Text>
           <Text style={s.muted}>↳ Ollama e OpenAI · Integrações disponíveis</Text>
-          <Text style={s.muted}>↳ Pesquisa autônoma · Não implementada</Text>
+          <Text style={s.muted}>↳ Pesquisa pública · Disponível mediante confirmação</Text>
         </View>
         {!chart.length ? <View style={s.empty}>
           <Icon name="flask" color="#57A0FF" size={29} />
@@ -904,13 +1065,13 @@ function PersonalApp() {
       {tab === 'Ajustes' && <>
         <Text style={s.title}>Ajustes</Text>
         <View style={s.card}><Text style={s.section}>Gateway de modelos</Text>
-          {[oldGateway, upgradedGateway, recoveryGateway].includes(settings.url) && <Button label="Conectar ao gateway 1.3" primary onPress={() =>
-            confirm('Usar o gateway 1.3?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
+          {[oldGateway, upgradedGateway, recoveryGateway, previousGateway].includes(settings.url) && <Button label="Conectar ao gateway 1.4" primary onPress={() =>
+            confirm('Usar o gateway 1.4?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
               async () => {
                 const credentials = {...settings, url: trackingGateway};
                 await SecureStore.setItemAsync('gatewayCredentials', JSON.stringify(credentials));
                 setSettings(credentials); setUrl(trackingGateway); setUsage(undefined); setRemoteAudit([]);
-                await audit(db, 'Gateway 1.3 selecionado');
+                await audit(db, 'Gateway 1.4 selecionado');
               })} />}
           {typeof probe?.usage?.dailyUsed === 'number' && <Text style={s.muted}>
             {probe.usage.dailyUsed}/{probe.usage.dailyLimit} tentativas hoje · {probe.usage.neuronsUsed}/{probe.usage.neuronLimit} Neurons
@@ -966,40 +1127,27 @@ function PersonalApp() {
           <View style={s.row}>{[.8,1,1.2].map(rate => <Button key={rate} label={rate.toLocaleString('pt-BR')+'×'}
             primary={voiceRate===rate} onPress={() => void perform(async () => {await option('voiceRate',String(rate)); await refresh(db);})} />)}</View>
         </View>
-        <View style={s.card}><Text style={s.section}>Objetivos acompanhados</Text>
-          {tracking ? <>
-            <Text style={s.muted}>Nível 2 · Revisões no servidor. As iniciativas chegam à conversa quando o app se conecta.</Text>
-            <Button label={tracking.enabled ? 'Pausar acompanhamento' : 'Autorizar acompanhamento'} onPress={() =>
-              confirm(tracking.enabled ? 'Pausar revisões?' : 'Autorizar revisões agendadas?',
-                'Somente os objetivos que você cadastrar aqui serão revisados pelo servidor. Use títulos e pendências que possa compartilhar.',
-                () => change('/initiative/permission','POST',{enabled:!tracking.enabled}))} />
-            {tracking.enabled && <>
-              <Field label="Título do objetivo" value={projectTitle} change={setProjectTitle} max={80} />
-              <Field label="Pendência a revisar" value={projectPending} change={setProjectPending} max={240} />
-              <Field label="Revisar em quantos minutos?" value={projectMinutes} change={setProjectMinutes} max={6} />
-              <Button primary label="Agendar revisão" onPress={() => void perform(async () => {
-                const minutes=Number(projectMinutes);
-                if (!Number.isInteger(minutes) || minutes<1 || minutes>525600) throw Error('Informe entre 1 e 525.600 minutos.');
-                if (!projectTitle.trim() || !projectPending.trim()) throw Error('Preencha o título e a pendência.');
-                confirm('Enviar objetivo para acompanhamento?', 'O título, a pendência e o horário serão armazenados no gateway.',
-                  async () => {
-                    await change('/initiative/projects','POST',{id:randomUUID(),title:projectTitle,pending:projectPending,due:Date.now()+minutes*60000});
-                    setProjectTitle('');setProjectPending('');
-                  });
-              })} />
-            </>}
-            {tracking.projects.map(item => <View key={item.id} style={s.card}>
-              <Text style={s.text}>{item.title}</Text><Text style={s.muted}>{item.pending} · {new Date(item.due).toLocaleString('pt-BR')}</Text>
-              <Button label={item.active ? 'Pausar objetivo' : 'Retomar objetivo'} onPress={() =>
-                void perform(() => change('/initiative/projects','PATCH',{id:item.id,active:!item.active}))} />
-              <Button label="Excluir objetivo" onPress={() => confirm('Excluir objetivo acompanhado?', 'A revisão e o registro vinculado serão removidos do gateway.',
-                () => change('/initiative/projects','DELETE',{id:item.id}))} />
-            </View>)}
-            {tracking.initiatives.map(item => <Pressable key={item.id} accessibilityRole="button" onPress={() => useInitiative(item)}>
-              <Text style={s.label}>{item.title} · {item.state==='new'?'Nova':item.state==='read'?'Lida':'Dispensada'}</Text>
-              <Text style={s.muted}>{item.origin} · {item.urgency} · {new Date(item.occurred).toLocaleString('pt-BR')}</Text>
-            </Pressable>)}
-          </> : <Text style={s.muted}>Conecte-se ao gateway 1.3 da IA Pessoal para acompanhar objetivos.</Text>}
+        <View style={s.card}><Text style={s.section}>Perfil local</Text>
+          <Field label="Nome preferido" value={profileName} change={setProfileName} max={80}/>
+          <Field label="Estilo de comunicação" value={profileStyle} change={setProfileStyle} max={180}/>
+          <Button label="Salvar perfil" onPress={()=>void perform(async()=>{await option('profileName',profileName.trim());await option('profileStyle',profileStyle.trim());await refresh(db);})}/>
+          <Text style={s.muted}>O perfil só acompanha um envio quando você escolhe incluí-lo.</Text>
+        </View>
+        <View style={s.card}><Text style={s.section}>Backup de memórias</Text>
+          <Text style={s.muted}>A cópia é cifrada. Guarde a chave separada. A restauração mantém as memórias existentes e importa as novas como privadas.</Text>
+          <Button label="Gerar cópia cifrada" onPress={()=>void perform(async()=>{
+            const value=await exportMemories(memories);setBackupKey(value.key);
+            await Share.share({message:value.payload});
+          })}/>
+          <Field label="Cópia cifrada para restaurar" value={backupText} change={setBackupText} multiline max={610000}/>
+          <Field label="Chave do backup" value={backupKey} change={setBackupKey} secret max={64}/>
+          {!!backupKey && <Button label="Copiar chave" onPress={()=>void perform(async()=>{await Clipboard.setStringAsync(backupKey);setNotice('Chave copiada. Guarde-a separada do backup.');})}/>}
+          <Button label="Validar e restaurar" disabled={!backupText.trim()} onPress={()=>void perform(async()=>{
+            const items=await readBackup(backupText.trim(),backupKey.trim());
+            confirm('Importar memórias?', 'O backup validado contém '+items.length+' registros. Duplicidades serão ignoradas.',async()=>{
+              const count=await importMemories(db,items);setBackupText('');setBackupKey('');await audit(db,'Backup de memórias restaurado');await refresh(db);setNotice(count+' memórias importadas.');
+            });
+          })}/>
         </View>
         <View style={s.card}><Text style={s.section}>Autonomia</Text>
           <Text style={s.text}>Livre · Busca local e bateria de testes com dados fixos.</Text>

@@ -19,6 +19,7 @@ export const schema = `
 `;
 
 export const additions = {
+  thread_id: "ALTER TABLE outbox ADD COLUMN thread_id TEXT NOT NULL DEFAULT 'principal'",
   recovery_state: 'ALTER TABLE outbox ADD COLUMN recovery_state TEXT',
   response_model: 'ALTER TABLE outbox ADD COLUMN response_model TEXT',
   reply_at: 'ALTER TABLE outbox ADD COLUMN reply_at INTEGER',
@@ -27,6 +28,8 @@ export const additions = {
 } as const;
 
 export const historySchema = `
+    CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+    INSERT OR IGNORE INTO conversations(id,title) VALUES ('principal','Histórico principal');
     CREATE TABLE IF NOT EXISTS memory_history(
       memory_id TEXT NOT NULL, version INTEGER NOT NULL, changed INTEGER NOT NULL,
       PRIMARY KEY(memory_id, version)

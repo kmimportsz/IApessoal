@@ -58,3 +58,38 @@ CREATE TABLE IF NOT EXISTS initiative_events (
   state TEXT NOT NULL DEFAULT 'new' CHECK(state IN ('new','read','dismissed'))
 );
 CREATE INDEX IF NOT EXISTS initiatives_recent ON initiative_events(occurred DESC);
+
+CREATE TABLE IF NOT EXISTS research_usage (
+  day TEXT PRIMARY KEY,
+  calls INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tool_audit_v14 (
+  id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  created INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_details_v14 (
+  project_id TEXT PRIMARY KEY REFERENCES tracked_projects(id) ON DELETE CASCADE,
+  description TEXT NOT NULL DEFAULT '',
+  objective TEXT NOT NULL DEFAULT '',
+  priority TEXT NOT NULL DEFAULT 'normal',
+  status TEXT NOT NULL DEFAULT 'active',
+  frequency_days INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS recurring_reviews_v14 (
+  project_id TEXT NOT NULL REFERENCES tracked_projects(id) ON DELETE CASCADE,
+  slot INTEGER NOT NULL,
+  occurred INTEGER NOT NULL,
+  due INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'new',
+  PRIMARY KEY(project_id,slot)
+);
+CREATE INDEX IF NOT EXISTS recurring_recent_v14 ON recurring_reviews_v14(occurred DESC);
+CREATE TRIGGER IF NOT EXISTS pause_project_details_insert_v14
+AFTER INSERT ON project_details_v14 WHEN NEW.status != 'active'
+BEGIN UPDATE tracked_projects SET active=0 WHERE id=NEW.project_id; END;
+CREATE TRIGGER IF NOT EXISTS pause_project_details_update_v14
+AFTER UPDATE OF status ON project_details_v14 WHEN NEW.status != 'active'
+BEGIN UPDATE tracked_projects SET active=0 WHERE id=NEW.project_id; END;

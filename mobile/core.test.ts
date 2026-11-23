@@ -63,3 +63,12 @@ test('Continuação sugere só uma troca recente e não herda memória vinculada
   assert.equal(recentContext('Continue',{...previous,prompt:'Contexto escolhido pelo usuário: teste'},20000),undefined);
   assert.equal(recentContext('Continue',previous,4000000),undefined);
 });
+
+test('Validação do backup separa dados aceitos de credenciais, IDs externos e formatos inválidos', async () => {
+  const {validateMemoryBackup}=await import('./core.ts');
+  const valid={id:'remoto',kind:'Projeto',body:'Projeto local',private:1,updated:20,version:15,token:'segredo'};
+  const [row]=validateMemoryBackup({version:1,memories:[valid]});
+  assert.deepEqual(row,{id:'',kind:'Projeto',body:'Projeto local',private:1,updated:20,version:1});
+  assert.throws(()=>validateMemoryBackup({version:2,memories:[]}));
+  assert.throws(()=>validateMemoryBackup({version:1,memories:[{...valid,private:'yes'}]}));
+});

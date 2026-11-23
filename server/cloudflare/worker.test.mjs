@@ -210,3 +210,55 @@ test('Objetivos exigem autorização e o agendamento gera um único evento verif
   assert.equal(events[0].origin,'revisão agendada');
   assert.equal(count(),0);
 });
+
+test('Calculadora usa racionais exatos e rejeita entrada executável', async () => {
+  const {calculate}=await import('./calculator.mjs');
+  assert.deepEqual(calculate('(0,1 + 0,2) * 100%'), {expression:'(0.1+0.2)*100%',exact:'3/10',decimal:'0,3',rounded:false});
+  assert.equal(calculate('1/3').exact,'1/3');
+  assert.throws(()=>calculate('1/0'));
+  assert.throws(()=>calculate('1; fetch("https://example.test")'));
+});
+
+test('Pesquisa é uma consulta fixa e a resposta só contém links reconstruídos da fonte', async () => {
+  const {searchPublic}=await import('./research.mjs');
+  const data=await searchPublic('energia solar',async url=>{
+    assert.equal(url.hostname,'pt.wikipedia.org');
+    assert.equal(url.searchParams.get('q'),'energia solar');
+    return Response.json({pages:[{key:'Energia_solar',title:'Energia solar',url:'https://example.test',description:'<b>Fonte</b>'}]});
+  });
+  assert.deepEqual(data.results,[{title:'Energia solar',url:'https://pt.wikipedia.org/wiki/Energia_solar',description:'Fonte'}]);
+});
+
+test('Plano semanal gera um único evento por ciclo e pausa suspende novas revisões', async t => {
+  const {call, env, db}=setup(t);
+  const id=crypto.randomUUID();
+  const day=86400000, due=Date.now()+60000;
+  await call('/initiative/permission',{enabled:true});
+  assert.equal((await call('/initiative/projects',{id,title:'Projeto',pending:'Teste',due})).status,201);
+  const details={id,description:'descrição',objective:'meta',priority:'high',status:'active',frequencyDays:7};
+  assert.equal((await call('/initiative/details',details)).status,200);
+  db.prepare('UPDATE tracked_projects SET due=? WHERE id=?').run(Date.now()-8*day,id);
+  await worker.scheduled({},env);await worker.scheduled({},env);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM recurring_reviews_v14').get().n,1);
+  assert.equal((await call('/initiative/details',{...details,status:'paused'})).status,200);
+  assert.equal(db.prepare('SELECT active FROM tracked_projects WHERE id=?').get(id).active,0);
+  db.prepare('UPDATE tracked_projects SET due=? WHERE id=?').run(Date.now()-15*day,id);
+  await worker.scheduled({},env);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM recurring_reviews_v14').get().n,1);
+});
+
+test('O modelo pode pedir somente a calculadora autorizada e o recibo entrega o resultado verificado', async t => {
+  const {call,env,db,consume,job}=setup(t);
+  const a={...job(),prompt:'Calcule (80 - 45) * 60'};
+  await call('/chat',a);
+  env.AI.run=async (_,input)=>{
+    assert.equal(input.tools[0].function.name,'calculate');
+    return {choices:[{message:{tool_calls:[{function:{name:'calculate',arguments:JSON.stringify({expression:'(80-45)*60'})}}]},finish_reason:'tool_calls'}]};
+  };
+  await consume();
+  const result=await (await call('/requests/'+a.id)).json();
+  assert.equal(result.state,'finished');
+  assert.match(result.reply,/2100/);
+  assert.equal(db.prepare('SELECT outcome FROM tool_audit_v14 WHERE id=?').get(a.id).outcome,'verified');
+  assert.equal((await call('/research',{query:'tema público'})).status,400);
+});

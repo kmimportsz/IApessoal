@@ -1,5 +1,5 @@
 export const categories = ['Experiência', 'Preferência', 'Decisão', 'Erro e solução',
-  'Conhecimento', 'Projeto', 'Ideia arquivada', 'Experimento'] as const;
+  'Conhecimento', 'Projeto', 'Ideia arquivada', 'Experimento', 'Perfil', 'Objetivo', 'Compromisso', 'Aprendizado', 'Importante'] as const;
 export type Category = typeof categories[number];
 export type Route = 'local' | 'paid';
 export type Memory = { id: string; kind: Category; body: string; private: number; updated: number; version: number };
@@ -100,4 +100,15 @@ export function recentContext(question: string, previous?: {prompt:string;reply:
       !previous?.reply || !previous.reply_at || now - previous.reply_at > 3_600_000 || previous.memory_id ||
       previous.prompt.startsWith('Contexto escolhido pelo usuário:')) return undefined;
   return ('Mensagem anterior: ' + previous.prompt.slice(0, 450) + '\nResposta anterior: ' + previous.reply.slice(0, 750));
+}
+
+export function validateMemoryBackup(value: unknown): Memory[] {
+  if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1 ||
+      !('memories' in value) || !Array.isArray(value.memories) || value.memories.length > 500) throw Error('Formato de backup inválido.');
+  return value.memories.map(row => {
+    if (!row || !categories.includes(row.kind) || typeof row.body !== 'string' ||
+        !row.body.trim() || row.body.length > 6000 || ![0,1].includes(row.private) ||
+        !Number.isSafeInteger(row.updated) || row.updated < 0) throw Error('O backup contém uma memória inválida.');
+    return {id:'',kind:row.kind,body:row.body.trim(),private:row.private,updated:row.updated,version:1};
+  });
 }
