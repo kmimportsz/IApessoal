@@ -20,7 +20,7 @@ function json(value, status = 200) {
 }
 function failure(error, status) { return json({error}, status); }
 
-export async function initiativeRoute({path, method, db, read, now}) {
+export async function initiativeRoute({path, method, db, read, now, enqueue}) {
   if (path === '/initiative' && method === 'GET') {
     const [permission, projects, initiatives] = await Promise.all([
       db.prepare('SELECT enabled FROM tracking_settings WHERE singleton=1').first(),
@@ -56,7 +56,12 @@ export async function initiativeRoute({path, method, db, read, now}) {
       AND (SELECT COUNT(*) FROM tracked_projects WHERE demo=0 AND active=1)<30
       ON CONFLICT(id) DO NOTHING RETURNING id
     `).bind(value.id,title,pending,value.due).first();
-    return created ? json(created,201) : failure('Ative o acompanhamento ou pause um objetivo antes de continuar.',409);
+    if (!created) return failure('Ative o acompanhamento ou pause um objetivo antes de continuar.',409);
+    const delay = Math.ceil((value.due - now) / 1000);
+    if (enqueue && delay <= 86400) {
+      try { await enqueue(delay); } catch { /* The periodic review can pick up this project. */ }
+    }
+    return json(created,201);
   }
   if (path === '/initiative/projects' && method === 'PATCH') {
     const value = await read(160);

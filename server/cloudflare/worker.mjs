@@ -232,7 +232,8 @@ export default {
       if (!await authorized(request, env)) return error('Credencial inválida.', 401);
       if (pathname === '/initiative' || pathname.startsWith('/initiative/')) {
         return await initiativeRoute({path: pathname, method: request.method, db: env.DB,
-          read: limit => readJson(request, limit), now: now.getTime()});
+          read: limit => readJson(request, limit), now: now.getTime(),
+          enqueue: env.INFERENCE ? delay => env.INFERENCE.send({kind:'initiative_review'}, {delaySeconds:delay}) : undefined});
       }
       if (request.method === 'GET' && pathname === '/status') {
         const usage = env.DB && await env.DB.prepare(
@@ -261,7 +262,8 @@ export default {
   },
   async queue(batch, env) {
     for (const message of batch.messages) {
-      await consume(env, message.body);
+      if (message.body?.kind === 'initiative_review') await reviewProjects(env.DB,Date.now());
+      else await consume(env, message.body);
       message.ack();
     }
   },
