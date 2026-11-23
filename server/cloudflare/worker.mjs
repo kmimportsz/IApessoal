@@ -1,3 +1,4 @@
+import { githubRoute, githubWebhook, runGitHubMonitor } from './github.mjs';
 import { backupRoute } from './backup.mjs';
 import { automationRoute, runProjectAnalyses } from './automation.mjs';
 import { calculate, calculatorTool } from './calculator.mjs';
@@ -13,6 +14,7 @@ const models = {
   [economical]: {label: 'GPT-OSS 20B', inputRate: 18182, outputRate: 27273, maxTokens: 768},
   [advanced]: {label: 'GPT-OSS 120B', inputRate: 31818, outputRate: 68182, maxTokens: 4096},
 };
+const repositoryModel = {id:'@cf/meta/llama-3.1-8b-instruct-fp8-fast',inputRate:4119,outputRate:34868,maxTokens:720};
 const dailyCalls = 100;
 const dailyNeurons = 5000;
 
@@ -259,6 +261,7 @@ export default {
         }});
       }
       if (request.method === 'POST' && pathname === '/pair') return await pair(request, env);
+      if (request.method==='POST' && pathname==='/github/webhook') return await githubWebhook(request,env,now.getTime());
       if (!await authorized(request, env)) return error('Credencial inválida.', 401);
       if (request.method === 'POST' && pathname === '/tools/calculate') {
         const data = await readJson(request,1024);
@@ -279,6 +282,7 @@ export default {
         try {return json({...await searchPublic(query),dailyUsed:reserved.calls,dailyLimit:searchLimit});}
         catch {return error('A fonte pública não respondeu. Tente mais tarde.',502);}
       }
+      if (pathname==='/github' || pathname.startsWith('/github/')) return await githubRoute({env,path:pathname,method:request.method,read:limit=>readJson(request,limit),now:now.getTime()});
       if(pathname==='/backup/projects') return backupRoute({db:env.DB,method:request.method,read:limit=>readJson(request,limit)});
       if (pathname === '/automation' || pathname.startsWith('/automation/')) {
         return automationRoute({env,path:pathname,method:request.method,read:limit=>readJson(request,limit),now:now.getTime()});
@@ -321,8 +325,11 @@ export default {
     }
   },
   async scheduled(_event, env) {
-    await processReview(env);
-    await env.DB.prepare('UPDATE request_recovery SET sealed_reply=NULL WHERE expires <= ? AND sealed_reply IS NOT NULL')
-      .bind(Date.now()).run();
+    await Promise.all([
+      processReview(env),
+      runGitHubMonitor(env,{model:repositoryModel,estimate:reservedNeurons,charge:neurons}),
+      env.DB.prepare('UPDATE request_recovery SET sealed_reply=NULL WHERE expires <= ? AND sealed_reply IS NOT NULL')
+        .bind(Date.now()).run(),
+    ]);
   }
 };

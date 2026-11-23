@@ -19,7 +19,7 @@ async function hash(data) {
   return Array.from(new Uint8Array(value),n=>n.toString(16).padStart(2,'0')).join('');
 }
 
-async function notify(env, run, now) {
+export async function notify(env, run, now) {
   const day=new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
   const pref=await env.DB.prepare('SELECT token,start_hour,end_hour FROM push_preferences_v15 WHERE singleton=1').first();
   if(!pref || !pushPattern.test(pref.token)) return;

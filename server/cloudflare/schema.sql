@@ -124,3 +124,26 @@ CREATE TABLE IF NOT EXISTS push_delivery_v15 (
   created INTEGER NOT NULL,
   status TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS github_repos_v15 (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('active','paused','disconnected')),
+  due INTEGER NOT NULL, checked INTEGER, head TEXT, lease TEXT, lease_until INTEGER,
+  revision INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS github_deliveries_v15 (
+  id TEXT PRIMARY KEY, received INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS github_deliveries_v15_received ON github_deliveries_v15(received);
+CREATE TABLE IF NOT EXISTS github_runs_v15 (
+  id TEXT PRIMARY KEY, repo INTEGER NOT NULL, commit_sha TEXT NOT NULL,
+  created INTEGER NOT NULL, state TEXT NOT NULL, sealed TEXT,
+  FOREIGN KEY(repo) REFERENCES github_repos_v15(id)
+);
+CREATE INDEX IF NOT EXISTS github_runs_v15_repo ON github_runs_v15(repo,created DESC);
+CREATE INDEX IF NOT EXISTS github_runs_v15_created ON github_runs_v15(created);
+CREATE TABLE IF NOT EXISTS github_findings_v15 (
+  id TEXT PRIMARY KEY, run TEXT NOT NULL, repo INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('new','dismissed','resolved')),
+  UNIQUE(repo,fingerprint), FOREIGN KEY(run) REFERENCES github_runs_v15(id)
+);

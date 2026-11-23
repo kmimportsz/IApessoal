@@ -25,6 +25,10 @@ const voice = requireOptionalNativeModule<typeof VoiceModule>('ExpoSpeechRecogni
 const tabs = ['Conversa', 'Projetos', 'Memórias', 'Laboratório', 'Ajustes'] as const;
 type Tab = typeof tabs[number];
 type Thread = {id:string;title:string;archived:number};
+type GitHubRepo = {id:number;name:string;description:string;state?:'active'|'paused'|'disconnected';head?:string;checked?:number;due?:number};
+type GitHubFinding = {path:string;line:number;excerpt:string;problem:string;impact:string;suggestion:string;priority:string;confidence:string};
+type GitHubRun = {id:string;repo:number;commit_sha:string;created:number;state:string;finding_id?:string;finding_state?:string;finding?:GitHubFinding};
+type GitHubStatus = {configured:boolean;repos:GitHubRepo[];history:GitHubRun[]};
 type Analysis = {run_id:string;project_id:string;cycle:number;title:string;created:number;state:string;summary?:string;action?:string};
 type Automation = {entries:Analysis[];grants:{project_id:string;enabled:number}[];push?:{start_hour:number;end_hour:number}|null};
 type Job = { memory_auto?:number; thread_id?:string; id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; response_model?: string | null; recovery_state?: string | null; memory_id: string | null; memory_version: number | null };
@@ -112,6 +116,8 @@ function PersonalApp() {
   const [researchMode,setResearchMode]=useState<'confirm'|'auto'|'off'>('confirm');
   const [autoGrants,setAutoGrants]=useState<{id:string;version:number}[]>([]);
   const [automation,setAutomation]=useState<Automation>();
+  const [github,setGithub]=useState<GitHubStatus>();
+  const [githubChoices,setGithubChoices]=useState<GitHubRepo[]>([]);
   const [pushStart,setPushStart]=useState('8');
   const [pushEnd,setPushEnd]=useState('22');
   const [researching,setResearching]=useState(false);
@@ -305,7 +311,12 @@ function PersonalApp() {
     const previous = [...jobs].reverse().find(job => (job.thread_id ?? 'principal') === threadId && job.state === 'done' && !!job.reply);
     return recentContext(prompt, previous);
   }, [context, prompt, ignoredRecent, jobs, threadId]);
-  const newestInitiative = tracking?.enabled ? tracking.initiatives.find(event => event.state === 'new') : undefined;
+  const resultsByEvent = new Map(automation?.entries.map(entry=>[entry.project_id+':'+entry.cycle,entry]));
+  const newInitiatives = tracking?.enabled ? tracking.initiatives.filter(event=>event.state==='new') : [];
+  const resultFor = (event: Initiative) => resultsByEvent.get(event.id+':'+(event.cycle??0));
+  const newestInitiative = newInitiatives.find(event=>resultFor(event)?.summary) ?? newInitiatives[0];
+  const initiativeResult = newestInitiative && resultFor(newestInitiative);
+  const initiativeAuthorized = automation?.grants.some(grant => grant.project_id === newestInitiative?.id && grant.enabled);
   const photoUri = avatarPhoto ? new File(Paths.document, avatarPhoto).uri : undefined;
   const autoMemory = useMemo(() => {
     if(context || !prompt.trim() || !autoGrants.length) return undefined;
@@ -454,7 +465,7 @@ function PersonalApp() {
   }
 
   useEffect(()=>{
-    if(settings.url!==trackingGateway||!settings.token||connected===false){setAutomation(undefined);return;}
+    if(settings.url!==trackingGateway||!settings.token||connected===false){setAutomation(undefined);setGithub(undefined);setGithubChoices([]);return;}
     let active=true;
     let inFlight=false;
     async function load(){
@@ -462,8 +473,12 @@ function PersonalApp() {
       inFlight=true;
       const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),9000);
       try {
-        const value=await fetch(settings.url+'/automation',{headers:{Authorization:'Bearer '+settings.token},signal:controller.signal});
-        if(value.ok){const state=await value.json();if(active)setAutomation(state);}
+        await Promise.all(['/automation','/github'].map(async path=>{
+          const value=await fetch(settings.url+path,{headers:{Authorization:'Bearer '+settings.token},signal:controller.signal});
+          if(!value.ok)return;
+          const state=await value.json();
+          if(active){if(path==='/automation')setAutomation(state);else setGithub(state);}
+        }));
       }catch{ /* The next foreground poll retries a read. */ }
       finally{clearTimeout(timer);inFlight=false;}
     }
@@ -471,6 +486,16 @@ function PersonalApp() {
     const subscription=AppState.addEventListener('change',next=>{if(next==='active')void load();});
     return ()=>{active=false;clearInterval(interval);subscription.remove();};
   },[settings,connected]);
+
+  async function githubAction(path: string, payload?: unknown) {
+    if(settings.url!==trackingGateway) throw Error('Conecte ao gateway 1.5.');
+    const value=await request(path,payload);
+    const data=await value.json();
+    if(!value.ok) throw Error(data.error??'Não foi possível acessar a integração GitHub.');
+    if(path==='/github/installations'){setGithubChoices(data.repos);return;}
+    const status=await request('/github');
+    if(status.ok)setGithub(await status.json());
+  }
 
   async function configurePush() {
     if(Constants.executionEnvironment==='storeClient') throw Error('Push remoto exige uma build nativa da IA Pessoal.');
@@ -744,9 +769,47 @@ function PersonalApp() {
     openThread('principal');await refresh(db);
   }
 
+  function discussFinding(run: GitHubRun) {
+    const finding=run.finding;
+    const repo=github?.repos.find(item=>item.id===run.repo);
+    if(!finding||!repo)return;
+    setContext(['Revisão defensiva de '+repo.name,run.commit_sha,
+      finding.path+':'+finding.line,finding.problem,finding.impact,finding.suggestion].join('\n'));
+    setContextMemory(undefined);
+    go('Conversa');
+  }
+
+  function findingCard(run: GitHubRun, repo: GitHubRepo) {
+    const f=run.finding;
+    if(!f)return null;
+    const link='https://github.com/'+repo.name+'/blob/'+run.commit_sha+'/'+f.path.split('/').map(encodeURIComponent).join('/')+'#L'+f.line;
+    return <View key={run.id} style={s.card}>
+      <Text style={s.kicker}>GITHUB · {repo.name} · {f.priority.toUpperCase()}</Text>
+      <Text style={s.label}>{f.problem}</Text>
+      <Text style={s.muted}>{formatDate(run.created)} · {run.commit_sha.slice(0,12)} · Confiança {f.confidence}
+        {run.finding_state==='resolved'?' · Resolvida':run.finding_state==='dismissed'?' · Dispensada':''}</Text>
+      <Pressable accessibilityRole="link" onPress={()=>void Linking.openURL(link)}>
+        <Text style={s.link}>{f.path}:{f.line}</Text>
+      </Pressable>
+      <Text style={s.text} selectable>{f.excerpt}</Text>
+      <Text style={s.muted}>Impacto · {f.impact}</Text>
+      <Text style={s.text}>Sugestão · {f.suggestion}</Text>
+      <View style={s.row}>
+        <Button label="Discutir" onPress={()=>discussFinding(run)}/>
+        {run.finding_state==='new' && <Button label="Dispensar" onPress={()=>void perform(()=>githubAction('/github/finding',{id:run.finding_id,state:'dismissed'}))}/>}
+        {run.finding_state!=='resolved' && <Button label="Marcar como resolvida" onPress={()=>void perform(()=>githubAction('/github/finding',{id:run.finding_id,state:'resolved'}))}/>}
+      </View>
+    </View>;
+  }
+
+  const githubInitiative=github?.history.find(run=>run.finding_state==='new'&&run.finding);
+  const githubInitiativeRepo=github?.repos.find(repo=>repo.id===githubInitiative?.repo);
+
   function useInitiative(item: Initiative) {
-    setPrompt('Vamos revisar o objetivo “' + item.title + '”. Pendência: ' + item.pending);
-    clearContext();
+    const result = automation?.entries.find(entry => entry.project_id === item.id && entry.cycle === (item.cycle ?? 0));
+    if (!result?.summary) { go('Projetos'); return; }
+    setContext([item.title, result.summary, result.action].filter(Boolean).join('\n'));
+    setContextMemory(undefined);
     go('Conversa');
     void perform(() => change('/initiative/events','POST',{id:item.id,cycle:item.cycle,state:'read'}));
   }
@@ -931,12 +994,18 @@ function PersonalApp() {
             </>}
           </View>}
           ListFooterComponent={<View style={s.timelineFooter}>
+            {githubInitiative && githubInitiativeRepo && findingCard(githubInitiative,githubInitiativeRepo)}
             {newestInitiative && <View style={s.card}>
-              <Text style={s.kicker}>REVISÃO AGENDADA · {newestInitiative.urgency.toUpperCase()}</Text>
+              <Text style={s.kicker}>{initiativeResult?.summary ? 'ANÁLISE CONCLUÍDA' :
+                initiativeResult?.state === 'started' ? 'ANÁLISE EM PROCESSAMENTO' :
+                initiativeResult ? 'REVISÃO REGISTRADA · RESULTADO INDISPONÍVEL' :
+                initiativeAuthorized ? 'REVISÃO REGISTRADA · AGUARDANDO ANÁLISE' : 'LEMBRETE DE REVISÃO'}</Text>
               <Text style={s.section}>{newestInitiative.title}</Text>
-              <Text style={s.text}>{newestInitiative.pending}</Text>
+              <Text style={s.text}>{initiativeResult?.summary ?? newestInitiative.pending}</Text>
+              {!!initiativeResult?.action && <Text style={s.muted}>{initiativeResult.action}</Text>}
               <View style={s.row}>
-                <Button label="Revisar na conversa" onPress={() => useInitiative(newestInitiative)} />
+                {initiativeResult?.summary && <Button label="Discutir análise" onPress={() => useInitiative(newestInitiative)} />}
+                {!initiativeResult?.summary && <Button label="Ver em Projetos" onPress={() => go('Projetos')} />}
                 <Button label="Dispensar" onPress={() => void perform(() => change('/initiative/events','POST',{id:newestInitiative.id,cycle:newestInitiative.cycle,state:'dismissed'}))} />
               </View>
             </View>}
@@ -1066,6 +1135,34 @@ function PersonalApp() {
       </>}
       {tab === 'Projetos' && <>
         <Text style={s.title}>Projetos</Text>
+        {github && <View style={s.card}>
+          <Text style={s.section}>Repositórios GitHub</Text>
+          {github.configured ? <Button label="Escolher repositório autorizado" onPress={()=>void perform(()=>githubAction('/github/installations'))}/> :
+            <Text style={s.muted}>A instalação da GitHub App ainda precisa ser configurada no gateway.</Text>}
+          {githubChoices.filter(repo=>!github.repos.some(r=>r.id===repo.id&&r.state==='active')).map(repo=>
+            <Button key={repo.id} label={'Acompanhar '+repo.name} onPress={()=>confirm('Acompanhar este repositório?',
+              'A IA poderá ler arquivos e alterações autorizadas e enviar trechos ao modelo para análise.',
+              ()=>githubAction('/github/repository',{id:repo.id,state:'active'}))}/>)}
+          {github.repos.map(repo=><View key={repo.id} style={s.card}>
+            <Text style={s.label}>{repo.name}</Text>
+            {!!repo.description && <Text style={s.muted}>{repo.description}</Text>}
+            <Text style={s.muted}>{repo.state==='active'?'Ativo':repo.state==='paused'?'Pausado':'Desconectado'}
+              {repo.head?' · '+repo.head.slice(0,12):''}
+              {repo.checked?' · Última verificação '+formatDate(repo.checked):''}</Text>
+            {repo.state==='active' && !!repo.due && <Text style={s.muted}>Próxima verificação · {formatDate(repo.due)}</Text>}
+            {repo.state!=='disconnected' && <View style={s.row}>
+              <Button label={repo.state==='active'?'Pausar':'Retomar'} onPress={()=>void perform(()=>githubAction('/github/repository',
+                {id:repo.id,state:repo.state==='active'?'paused':'active'}))}/>
+              <Button label="Desconectar" onPress={()=>confirm('Desconectar repositório?',
+                'O gateway deixará de consultar este repositório. Para revogar a permissão no GitHub, remova-o da instalação da GitHub App.',
+                ()=>githubAction('/github/repository',{id:repo.id,state:'disconnected'}))}/>
+            </View>}
+            {github.history.filter(run=>run.repo===repo.id).map(run=>run.finding?findingCard(run,repo):
+              <Text key={run.id} style={s.muted}>{formatDate(run.created)} · {run.commit_sha.slice(0,12)} ·
+                {' '}{({running:'Em análise',reviewed:'Analisado',failed:'Falhou',no_files:'Sem arquivos elegíveis',duplicate:'Descoberta já registrada',
+                  quota:'Aguardando cota',revoked:'Permissão alterada',unavailable:'Resultado indisponível'} as Record<string,string>)[run.state]??run.state}</Text>)}
+          </View>)}
+        </View>}
         {!!automation?.entries.length && <View style={s.card}><Text style={s.section}>Análises agendadas</Text>
           {automation.entries.map(entry=><View key={entry.run_id} style={s.card}>
             <Text style={s.label}>{entry.title} · {formatDate(entry.created)}</Text>

@@ -309,3 +309,78 @@ test('Backup remoto ignora projetos duplicados e nunca reativa a agenda importad
   assert.equal(db.prepare('SELECT active FROM tracked_projects WHERE id=?').get(id).active,0);
   assert.equal(db.prepare('SELECT state FROM initiative_events WHERE project_id=?').get(id).state,'read');
 });
+
+test('GitHub exige autorização, verifica webhook e analisa arquivo real do transporte simulado', async t=>{
+  const {db,env,call}=setup(t);
+  const {exportKey}=await import('node:crypto').then(c=>({exportKey:()=>c.generateKeyPairSync('rsa',{modulusLength:2048})
+    .privateKey.export({type:'pkcs8',format:'pem'})}));
+  Object.assign(env,{GITHUB_APP_ID:'123',GITHUB_INSTALLATION_ID:'456',GITHUB_PRIVATE_KEY:exportKey(),
+    GITHUB_WEBHOOK_SECRET:'segredo de teste'});
+  const commit='a'.repeat(40), tree='b'.repeat(40);
+  const list={id:12,full_name:'owner/repo',description:'Privado',private:true};
+  t.mock.method(globalThis,'fetch',async (address, options)=>{
+    const {hostname,pathname,searchParams}=new URL(address);
+    assert.equal(hostname,'api.github.com');
+    assert.equal(options.redirect,'error');
+    const out={
+      '/installation/repositories':{repositories:[list]},
+      '/repos/owner/repo':{...list,default_branch:'main'},
+      '/repos/owner/repo/commits/main':{sha:commit,files:[{filename:'src/index.js'}],commit:{tree:{sha:tree}}},
+      ['/repos/owner/repo/git/trees/'+tree]:{tree:[]},
+      '/repos/owner/repo/contents/src/index.js':{encoding:'base64',type:'file',size:37,content:btoa('export const label = input.value;')},
+      '/repos/owner/repo/issues':[],
+    };
+    if(options.method==='POST'){
+      assert.equal(pathname,'/app/installations/456/access_tokens');
+      const payload=JSON.parse(options.body);
+      if(payload.repository_ids) assert.deepEqual(payload.repository_ids,[12]);
+      assert.ok(Object.values(payload.permissions).every(value=>value==='read'));
+      return Response.json({token:'fake-installation-token'});
+    }
+    if(pathname.includes('/contents/')) assert.equal(searchParams.get('ref'),commit);
+    assert.ok(Object.hasOwn(out,pathname),pathname);
+    return Response.json(out[pathname]);
+  });
+  let inferences=0;
+  env.AI.run=async (_,payload)=>{
+    inferences++;
+    assert.match(payload.messages[1].content,/export const label = input.value/);
+    const finding={path:'src/index.js',line:1,priority:'média',confidence:'média',problem:'Entrada pode faltar.',
+      impact:'Renderização interrompida.',suggestion:'Valide antes de ler o valor.'};
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({finding})}}]};
+  };
+  assert.equal((await call('/github/installations',undefined,'z'.repeat(43))).status,401);
+  assert.equal((await call('/github/repository',{id:13,state:'active'})).status,404);
+  assert.equal((await call('/github/repository',{id:12,state:'active'})).status,200);
+  await Promise.all([worker.scheduled({},env),worker.scheduled({},env)]);
+  assert.equal(inferences,1);
+  const status=await (await call('/github')).json();
+  assert.equal(status.history[0].finding.excerpt,'export const label = input.value;');
+  assert.equal(status.history[0].commit_sha,commit);
+  assert.doesNotMatch(db.prepare('SELECT sealed FROM github_runs_v15').get().sealed,/Entrada|input.value/);
+  await call('/github/finding',{id:status.history[0].finding_id,state:'resolved'});
+  assert.equal((await (await call('/github')).json()).history[0].finding_state,'resolved');
+
+  const body=JSON.stringify({installation:{id:456},repository:{id:12,default_branch:'main'},ref:'refs/heads/main'});
+  const {createHmac}=await import('node:crypto');
+  const signature='sha256='+createHmac('sha256',env.GITHUB_WEBHOOK_SECRET).update(body).digest('hex');
+  const delivery=crypto.randomUUID();
+  const webhook = (sig,event='push')=>worker.fetch(new Request('https://ipe.test/github/webhook',{
+    method:'POST',body,headers:{'X-Hub-Signature-256':sig,'X-GitHub-Delivery':delivery,'X-GitHub-Event':event},
+  }),env);
+  assert.equal((await webhook('sha256='+'0'.repeat(64))).status,401);
+  assert.equal((await webhook(signature)).status,200);
+  assert.equal((await webhook(signature)).status,200);
+  assert.equal(db.prepare('SELECT revision FROM github_repos_v15').get().revision,1);
+  await call('/github/repository',{id:12,state:'paused'});
+  await worker.scheduled({},env);
+  assert.equal(inferences,1);
+  await call('/github/repository',{id:12,state:'disconnected'});
+  assert.equal((await (await call('/github')).json()).history.length,0);
+});
+
+test('Uma descoberta jamais pode citar arquivo ou linha ausente do material',async ()=>{
+  const {evidence}=await import('./github.mjs');
+  const f={path:'file.js',line:2,priority:'alta',confidence:'baixa',problem:'x',impact:'y',suggestion:'z'};
+  assert.throws(()=>evidence({response:JSON.stringify({finding:f})},[{path:'file.js',lines:['linha 1']}]),/Evidência inválida/);
+});
