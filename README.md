@@ -1,5 +1,24 @@
 # Inteligência Pessoal Evolutiva
 
+## Versão 1.1 · Prévia iPhone
+
+Abra no Safari e toque em **Abrir no Expo Go**. [Prévia iPhone](https://iapessoal-preview-v11.km-prospect-ai-app.workers.dev/)
+
+- A conversa inclui linha do tempo pesquisável, compositor fixo, seleção e cópia, fila persistente e confirmações. O estado do cabeçalho distingue rede, autenticação e disponibilidade informada pelo gateway. A verificação de status não chama um modelo.
+- As memórias ficam no aparelho. A migração acrescenta colunas à fila e uma tabela de metadados de revisão. Uma memória escolhida para um novo envio precisa continuar disponível na mesma versão. Uma preferência explícita pode abrir um rascunho privado para revisão, que só é gravado ao tocar em **Salvar**.
+- O laboratório agrega apenas resultados registrados. A ativação da candidata ainda exige nova execução e aprovação. A auditoria e o controle de orçamento do servidor continuam ativos.
+- No Expo Go, use o ditado do teclado quando o módulo nativo de reconhecimento estiver indisponível. Configure um gateway HTTPS para obter respostas reais. O nome do banco, a chave do SecureStore e a identidade de escopo da prévia foram mantidos. Teste a continuidade dos dados no mesmo aparelho e na mesma instalação do Expo Go.
+- A versão 1.0 permanece disponível por [sua prévia original](https://iapessoal-preview-v1.km-prospect-ai-app.workers.dev/) e pela tag [v1.0.0](https://github.com/kmimportsz/IApessoal/tree/v1.0.0).
+
+### Roteiro de teste no aparelho
+
+1. Abra a conversa, digite uma mensagem longa e verifique o compositor com o teclado aberto. Adicione à fila e confira a hora e o estado. Mantenha o texto pressionado para selecioná-lo ou use o menu da mensagem para copiar.
+2. Crie, edite e filtre uma memória privada. Feche e reabra o app. Confira se o texto permanece. Se já usava a prévia 1.0 na mesma instalação do Expo Go, confira também as memórias anteriores.
+3. Ative o modo avião após carregar a prévia. Use as memórias e execute o laboratório. Confira se a fila não transmite mensagens. Volte a conectar e confirme manualmente um envio quando houver gateway.
+4. Em um gateway de teste, confira os estados com modelo desativado, credencial recusada e servidor indisponível. Com o gateway habilitado, compare o texto exibido no balão com o contexto que você decidiu enviar.
+5. Ative **Reduzir Movimento** nos ajustes do aparelho e confira o fundo estático. Verifique também pesquisa, navegação e leitura da resposta.
+
+
 Base funcional 1.0 de uso individual. O nome da personagem fica em aberto. A personalidade original usa investigação, questionamento e humor leve. O aplicativo usa React Native, Expo, TypeScript e SQLite. O gateway usa Python e SQLite. Supabase fica fora desta versão porque o uso individual e as memórias restritas ao aparelho dispensam uma conta e um banco em nuvem.
 
 ## O que funciona
@@ -13,10 +32,10 @@ Base funcional 1.0 de uso individual. O nome da personagem fica em aberto. A per
 
 ## Usar apenas com o celular
 
-1. Abra um repositório **privado** por um navegador móvel e importe os arquivos. Abra um terminal de desenvolvimento na nuvem a partir do navegador, se tiver acesso a um ambiente com Node.js 22+.
+1. Abra um repositório **privado** por um navegador móvel e importe os arquivos. Abra um terminal de desenvolvimento na nuvem a partir do navegador, se tiver acesso a um ambiente com Node.js 22.13+ ou 24.3+.
 2. Em `mobile/`, execute `npm ci` e `npm run check`. Confirme as cotas e os requisitos do serviço de build antes de iniciar qualquer operação externa.
 3. Para gerar um APK instalável no Android, configure um projeto Expo próprio e execute `npx eas-cli login`, `npx eas-cli build:configure` e `npx eas-cli build --platform android --profile preview`. Abra o link privado de distribuição no telefone. Se a build exceder a cota gratuita disponível, interrompa antes de contratar.
-4. No iOS, use um app de desenvolvimento compatível ou uma build EAS com assinatura e distribuição autorizadas. Distribuição via TestFlight tem requisitos de conta Apple. Em teste sem módulos nativos personalizados, o Expo Go precisa ser compatível com o SDK 54 e o ditado integrado pode ficar indisponível. Para distribuição em loja, valide o identificador, configure a assinatura, confira as declarações de privacidade e use o perfil `production` somente após teste em dispositivos reais.
+4. No iOS, use um app de desenvolvimento compatível ou uma build EAS com assinatura e distribuição autorizadas. Distribuição via TestFlight tem requisitos de conta Apple. Em teste sem módulos nativos personalizados, o Expo Go precisa ser compatível com o SDK 58 e o ditado integrado pode ficar indisponível. Para distribuição em loja, valide o identificador, configure a assinatura, confira as declarações de privacidade e use o perfil `production` somente após teste em dispositivos reais.
 5. Na primeira abertura, experimente **Memórias** e **Laboratório**. O gateway é necessário para respostas generativas. Configure-o em **Ajustes** quando houver um host HTTPS. O computador pode ser substituído por um terminal hospedado, mas o servidor e o processo de assinatura ainda precisam existir.
 
 ## Gateway

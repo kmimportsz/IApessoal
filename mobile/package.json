@@ -1,18 +1,29 @@
 {
   "name": "ipe-mobile",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "main": "index.ts",
-  "scripts": {"start":"expo start","check":"tsc --noEmit","test":"node --experimental-strip-types --test core.test.ts"},
-  "dependencies":{
-    "expo":"~54.0.38",
-    "expo-crypto":"~15.0.9",
-    "expo-secure-store":"~15.0.8",
-    "expo-speech":"~14.0.8",
-    "expo-speech-recognition":"^3.1.3",
-    "expo-sqlite":"~16.0.10",
-    "react":"19.1.0",
-    "react-native":"0.81.5"
+  "scripts": {
+    "start": "expo start",
+    "check": "tsc --noEmit",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test *.test.ts"
   },
-  "devDependencies":{"@types/react":"~19.1.10","typescript":"~5.9.2"}
+  "dependencies": {
+    "@react-native-community/netinfo": "12.0.1",
+    "expo": "~58.0.26",
+    "expo-clipboard": "~58.0.4",
+    "expo-crypto": "~58.0.8",
+    "expo-secure-store": "~58.0.3",
+    "expo-speech": "~58.0.4",
+    "expo-speech-recognition": "^3.1.3",
+    "expo-sqlite": "~58.0.18",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-safe-area-context": "~5.11.1",
+    "react-native-svg": "15.16.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "typescript": "~5.9.2"
+  }
 }

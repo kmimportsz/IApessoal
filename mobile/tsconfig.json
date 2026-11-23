@@ -1,1 +1,1 @@
-{"extends":"expo/tsconfig.base","compilerOptions":{"strict":true},"exclude":["core.test.ts"]}
+{"extends":"expo/tsconfig.base","compilerOptions":{"strict":true},"exclude":["*.test.ts"]}

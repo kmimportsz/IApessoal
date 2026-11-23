@@ -48,3 +48,27 @@ export function endpoint(raw: string): string {
   }
   return value.href.replace(/\/$/, '');
 }
+
+/** Only explicit, short preferences are offered for review. The candidate remains in memory. */
+export function preferenceCandidate(text: string): string | undefined {
+  const value = text.trim();
+  if (!/^prefiro\s+.{3,100}$/iu.test(value) || /[@\d\n]|\b(senha|cpf|conta|cartão|segredo|endereço|telefone|saúde)\b/iu.test(value)) return;
+  return value;
+}
+
+export type Connection = 'unconfigured' | 'offline' | 'checking' | 'unreachable' | 'disabled' | 'auth' | 'online';
+export function connectionState(configured: boolean, connected: boolean | null, status: number | undefined,
+  routeEnabled?: boolean): Connection {
+  if (connected === false) return 'offline';
+  if (!configured) return 'unconfigured';
+  if (status === undefined) return 'checking';
+  if (status === 401 || status === 403) return 'auth';
+  if (status !== 200 || typeof routeEnabled !== 'boolean') return 'unreachable';
+  return routeEnabled ? 'online' : 'disabled';
+}
+
+export function messageForQueue(prompt: string, context: string): string {
+  const message = prompt.trim();
+  if (!context) return message;
+  return 'Contexto escolhido pelo usuário:\n' + context + '\n\nMensagem atual:\n' + message;
+}

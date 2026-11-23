@@ -2,7 +2,7 @@
   "expo": {
     "name": "Inteligência Pessoal Evolutiva",
     "slug": "inteligencia-pessoal-evolutiva",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "ios": {
       "bundleIdentifier": "app.ipe.personal"
@@ -18,7 +18,8 @@
           "microphonePermission": "Permitir o microfone para ditar mensagens.",
           "speechRecognitionPermission": "Permitir o reconhecimento de fala para ditar mensagens."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "icon": "./assets/icon.png"
   }

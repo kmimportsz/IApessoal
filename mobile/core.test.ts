@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eligible, endpoint, experiment, matches } from './core.ts';
+import { connectionState, eligible, endpoint, experiment, matches, messageForQueue, preferenceCandidate } from './core.ts';
 
 test('Busca tolera acentos e ordem na versão candidata', () => {
   assert.equal(matches('Ação planejada para amanhã', 'amanha acao', 2), true);
@@ -21,4 +21,26 @@ test('Somente gateway HTTPS sem segredos na URL', () => {
   for (const url of ['http://ipe.example', 'https://secret@ipe.example', 'https://ipe.example/?key=token']) {
     assert.throws(() => endpoint(url));
   }
+});
+
+test('Disponibilidade distingue ausência de rede, credencial e rota desativada', () => {
+  assert.equal(connectionState(true, false, 200, true), 'offline');
+  assert.equal(connectionState(false, true, undefined), 'unconfigured');
+  assert.equal(connectionState(true, true, undefined), 'checking');
+  assert.equal(connectionState(true, true, 401), 'auth');
+  assert.equal(connectionState(true, true, 0), 'unreachable');
+  assert.equal(connectionState(true, true, 200, false), 'disabled');
+  assert.equal(connectionState(true, true, 200, true), 'online');
+});
+
+test('A sugestão de memória exige preferência explícita e passa por filtro básico', () => {
+  assert.equal(preferenceCandidate('  Prefiro respostas curtas. '), 'Prefiro respostas curtas.');
+  for (const text of ['Eu gosto de café', 'Prefiro a senha azul', 'Prefiro ana@exemplo.com', 'Prefiro 1234']) {
+    assert.equal(preferenceCandidate(text), undefined);
+  }
+});
+
+test('O texto marcado como contexto aparece explicitamente na mensagem enfileirada', () => {
+  assert.equal(messageForQueue('  Olá  ', ''), 'Olá');
+  assert.equal(messageForQueue('  Olá ', 'Conversa anterior'), 'Contexto escolhido pelo usuário:\nConversa anterior\n\nMensagem atual:\nOlá');
 });
