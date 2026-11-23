@@ -4,14 +4,17 @@ import { ActivityIndicator, Alert, AppState, FlatList, Keyboard, KeyboardAvoidin
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useNetInfo } from '@react-native-community/netinfo';
 import * as Clipboard from 'expo-clipboard';
-import { Avatar, Atmosphere, Icon, IconButton, palette, type AvatarState, type IconName } from './visual';
+import * as ImagePicker from 'expo-image-picker';
+import { File, Paths } from 'expo-file-system';
+import { trackingGateway, useInitiatives, type Initiative } from './initiative';
+import { Avatar, Atmosphere, Icon, IconButton, avatarChoices, palette, type AvatarChoice, type AvatarState, type IconName } from './visual';
 import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
 import * as SecureStore from 'expo-secure-store';
 import * as Speech from 'expo-speech';
 import { randomUUID } from 'expo-crypto';
 import { requireOptionalNativeModule } from 'expo';
 import type { ExpoSpeechRecognitionModule as VoiceModule } from 'expo-speech-recognition';
-import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, preferenceCandidate, relevantMemory, type Category, type Memory, type Route } from './core';
+import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, preferenceCandidate, recentContext, relevantMemory, type Category, type Memory, type Route } from './core';
 import { audit, initialize } from './storage';
 import { claimJobSql } from './outbox';
 
@@ -134,6 +137,14 @@ function PersonalApp() {
   const [settings, setSettings] = useState({ url: '', token: '' });
   const [usage, setUsage] = useState<Usage>();
   const [remoteAudit, setRemoteAudit] = useState<(Receipt & {id: string; state: string; reserved: number})[]>([]);
+  const [avatarChoice, setAvatarChoice] = useState<AvatarChoice>('Clássico');
+  const [avatarPhoto, setAvatarPhoto] = useState<string>();
+  const [voiceRate, setVoiceRate] = useState(1);
+  const [projectTitle, setProjectTitle] = useState('');
+  const [projectPending, setProjectPending] = useState('');
+  const [projectMinutes, setProjectMinutes] = useState('60');
+  const [ignoredRecent, setIgnoredRecent] = useState<string>();
+  const {tracking,change} = useInitiatives(settings.url,settings.token,connected);
   const [portrait, setPortrait] = useState(palette.blueDark);
   const [listening, setListening] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -153,6 +164,10 @@ function PersonalApp() {
     setMemories(mem); setJobs(queue); setEntries(log); setResults(runs); setRevisions(history);
     setVersion(Number(prefs.search ?? 1));
     setPortrait(prefs.portrait ?? palette.blueDark);
+    setAvatarChoice(avatarChoices.includes(prefs.avatarChoice as AvatarChoice) ? prefs.avatarChoice as AvatarChoice : 'Clássico');
+    setAvatarPhoto(/^avatar-[a-f0-9-]+\.jpg$/i.test(prefs.avatarPhoto ?? '') ? prefs.avatarPhoto : undefined);
+    const rate = Number(prefs.voiceRate);
+    setVoiceRate([.8,1,1.2].includes(rate) ? rate : 1);
     setInitiative(prefs.initiative === 'yes');
     const week = 7 * 24 * 60 * 60 * 1000;
     setSuggestion(prefs.initiative === 'yes'
@@ -244,6 +259,13 @@ function PersonalApp() {
     const match = relevantMemory(prompt, memories);
     return match?.id === dismissedMemory ? undefined : match;
   }, [context, prompt, memories, dismissedMemory]);
+  const suggestedRecent = useMemo(() => {
+    if (context || prompt === ignoredRecent) return undefined;
+    const previous = [...jobs].reverse().find(job => job.state === 'done' && !!job.reply);
+    return recentContext(prompt, previous);
+  }, [context, prompt, ignoredRecent, jobs]);
+  const newestInitiative = tracking?.enabled ? tracking.initiatives.find(event => event.state === 'new') : undefined;
+  const photoUri = avatarPhoto ? new File(Paths.document, avatarPhoto).uri : undefined;
   const draftTooLong = messageForQueue(prompt, context).length > 6000;
   const freeLabel = probe?.usage?.localLabel ?? 'Ollama';
   const avatarState: AvatarState = listening ? 'listening' : busy ? 'thinking' : speaking ? 'speaking' :
@@ -395,7 +417,7 @@ function PersonalApp() {
       }
       if (response.ok && typeof data.reply === 'string') {
         await saveReply(db, job.id, data);
-      } else if (response.ok && data.state && settings.url === recoveryGateway) {
+      } else if (response.ok && data.state && [recoveryGateway,trackingGateway].includes(settings.url)) {
         await db.runAsync("UPDATE outbox SET state='uncertain', recovery_state=? WHERE id=?",
           data.state === 'finished' ? 'unavailable' : data.state, job.id);
       } else {
@@ -424,7 +446,7 @@ function PersonalApp() {
 
   const verifyReply = useCallback(async (job: Job, manual: boolean) => {
     if (!db || connected === false || checkingJobs.current.has(job.id)) return;
-    if (settings.url !== recoveryGateway || ![recoveryGateway, upgradedGateway].includes(job.url)) {
+    if (![recoveryGateway,trackingGateway].includes(settings.url) || ![recoveryGateway,upgradedGateway,trackingGateway].includes(job.url) || (job.url === trackingGateway && settings.url !== trackingGateway)) {
       if (manual) setNotice('A recuperação por ID está disponível no gateway 1.2.1.');
       return;
     }
@@ -432,7 +454,8 @@ function PersonalApp() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
     try {
-      const response = await fetch(settings.url + '/requests/' + encodeURIComponent(job.id), {
+      const destination = job.url === recoveryGateway ? recoveryGateway : settings.url;
+      const response = await fetch(destination + '/requests/' + encodeURIComponent(job.id), {
         headers: {Authorization: 'Bearer ' + settings.token}, signal: controller.signal,
       });
       const result = await response.json() as Receipt;
@@ -455,15 +478,15 @@ function PersonalApp() {
   }, [db, connected, settings, refresh]);
 
   useEffect(() => {
-    if (!db || settings.url !== recoveryGateway || connected === false) return;
+    if (!db || ![recoveryGateway,trackingGateway].includes(settings.url) || connected === false) return;
     let active = true;
     let running = false;
     async function checkPending() {
       if (running || !active || ['background','inactive'].includes(AppState.currentState ?? 'active')) return;
       running = true;
       try {
-        const pending = await db!.getAllAsync<Job>(`SELECT * FROM outbox WHERE state='uncertain' AND url IN (?,?)
-          AND (recovery_state IS NULL OR recovery_state='processing') ORDER BY created DESC LIMIT 4`, recoveryGateway, upgradedGateway);
+        const pending = await db!.getAllAsync<Job>(`SELECT * FROM outbox WHERE state='uncertain' AND url IN (?,?,?)
+          AND (recovery_state IS NULL OR recovery_state='processing') ORDER BY created DESC LIMIT 4`, recoveryGateway, upgradedGateway, settings.url);
         if (active) await Promise.all(pending.map(job => verifyReply(job, false)));
       } catch { /* The next foreground check can recover the result. */ }
       finally { running = false; }
@@ -476,7 +499,7 @@ function PersonalApp() {
 
   async function regenerate(job: Job) {
     if (!db || busy || networkLock.current) return;
-    if (job.url && job.url !== settings.url && !(job.url === upgradedGateway && settings.url === recoveryGateway)) {
+    if (job.url && job.url !== settings.url && !([upgradedGateway,recoveryGateway].includes(job.url) && [recoveryGateway,trackingGateway].includes(settings.url))) {
       throw new Error('Selecione o gateway original antes de gerar outra resposta.');
     }
     const id = randomUUID();
@@ -532,9 +555,38 @@ function PersonalApp() {
     setEditor(true); go('Memórias');
   }
 
+  async function pickAvatar() {
+    if (!db) return;
+    const result = await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],allowsEditing:true,aspect:[1,1],quality:.7});
+    if (result.canceled) return;
+    const name = 'avatar-' + randomUUID() + '.jpg';
+    const copy = new File(Paths.document,name);
+    new File(result.assets[0].uri).copy(copy);
+    try { await option('avatarPhoto',name); }
+    catch (error) { if(copy.exists) copy.delete(); throw error; }
+    if (avatarPhoto) {const old = new File(Paths.document,avatarPhoto); if(old.exists) old.delete();}
+    await refresh(db);
+  }
+
+  async function removeAvatar() {
+    if(!db || !avatarPhoto) return;
+    await option('avatarPhoto','');
+    const old = new File(Paths.document,avatarPhoto);
+    if(old.exists) old.delete();
+    await refresh(db);
+  }
+
+  function useInitiative(item: Initiative) {
+    setPrompt('Vamos revisar o objetivo “' + item.title + '”. Pendência: ' + item.pending);
+    clearContext();
+    go('Conversa');
+    void perform(() => change('/initiative/events','POST',{id:item.id,state:'read'}));
+  }
+
   function speak(reply: string) {
+    if (speaking) {void Speech.stop();return;}
     void Speech.stop().then(() => {
-      Speech.speak(reply, {language: 'pt-BR', onStart: () => setSpeaking(true),
+      Speech.speak(reply, {language: 'pt-BR', rate: voiceRate, onStart: () => setSpeaking(true),
         onDone: () => setSpeaking(false), onStopped: () => setSpeaking(false),
         onError: () => { setSpeaking(false); setNotice('Voz indisponível no aparelho.'); },
       });
@@ -580,7 +632,7 @@ function PersonalApp() {
       }}, cancel]);
     }
     return <View style={[s.messageRow, !isReply && s.userRow]}>
-      {isReply && <Avatar small ring={palette.blueDark} />}
+      {isReply && <Avatar small ring={palette.blueDark} choice={avatarChoice} photo={photoUri} />}
       <View style={[s.bubble, isReply ? s.assistantBubble : s.userBubble]}>
         <Text style={s.message} selectable>{content}</Text>
         <View style={s.bubbleMeta}>
@@ -591,7 +643,7 @@ function PersonalApp() {
         </View>
         {isReply && <View style={s.replyActions}>
           <Pressable accessibilityRole="button" onPress={() => speak(content)} style={s.inlineAction}>
-            <Text style={s.link}>Ouvir</Text></Pressable>
+            <Text style={s.link}>{speaking ? 'Parar leitura' : 'Ouvir'}</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={busy || connected === false || !settings.url}
             onPress={() => confirm('Gerar outra resposta?', 'O texto e o contexto originais serão enviados novamente. Cada nova resposta usa uma tentativa.',
               () => regenerate(job))} style={s.inlineAction}>
@@ -630,7 +682,7 @@ function PersonalApp() {
     <Atmosphere />
     <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={s.header}>
-        <Avatar state={avatarState} ring={portrait} />
+        <Avatar state={avatarState} ring={portrait} choice={avatarChoice} photo={photoUri} />
         <View style={s.headerCopy}>
           <Text style={s.brand}>IA Pessoal</Text>
           <View style={s.status}><View style={[s.statusDot, state === 'online' && s.onlineDot]} />
@@ -669,6 +721,21 @@ function PersonalApp() {
             </>}
           </View>}
           ListFooterComponent={<View style={s.timelineFooter}>
+            {newestInitiative && <View style={s.card}>
+              <Text style={s.kicker}>REVISÃO AGENDADA · {newestInitiative.urgency.toUpperCase()}</Text>
+              <Text style={s.section}>{newestInitiative.title}</Text>
+              <Text style={s.text}>{newestInitiative.pending}</Text>
+              <View style={s.row}>
+                <Button label="Revisar na conversa" onPress={() => useInitiative(newestInitiative)} />
+                <Button label="Dispensar" onPress={() => void perform(() => change('/initiative/events','POST',{id:newestInitiative.id,state:'dismissed'}))} />
+              </View>
+            </View>}
+            {!!suggestedRecent && <View style={s.card}>
+              <Text style={s.label}>Retomar a troca anterior?</Text>
+              <Text style={s.text} selectable>{suggestedRecent}</Text>
+              <View style={s.row}><Button label="Incluir neste envio" onPress={() => {setContext(suggestedRecent);setContextMemory(undefined);}} />
+              <Button label="Ignorar" onPress={() => setIgnoredRecent(prompt)} /></View>
+            </View>}
             {suggestion && <View style={s.card}>
               <Text style={s.kicker}>IDEIA PARA REVISITAR</Text><Text style={s.text}>{suggestion.body}</Text>
               <Text style={s.muted}>Origem: memórias locais · {formatDate(suggestion.updated)}</Text>
@@ -837,13 +904,13 @@ function PersonalApp() {
       {tab === 'Ajustes' && <>
         <Text style={s.title}>Ajustes</Text>
         <View style={s.card}><Text style={s.section}>Gateway de modelos</Text>
-          {[oldGateway, upgradedGateway].includes(settings.url) && <Button label="Conectar ao gateway 1.2.1" primary onPress={() =>
-            confirm('Usar o gateway 1.2.1?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
+          {[oldGateway, upgradedGateway, recoveryGateway].includes(settings.url) && <Button label="Conectar ao gateway 1.3" primary onPress={() =>
+            confirm('Usar o gateway 1.3?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
               async () => {
-                const credentials = {...settings, url: recoveryGateway};
+                const credentials = {...settings, url: trackingGateway};
                 await SecureStore.setItemAsync('gatewayCredentials', JSON.stringify(credentials));
-                setSettings(credentials); setUrl(recoveryGateway); setUsage(undefined); setRemoteAudit([]);
-                await audit(db, 'Gateway 1.2.1 selecionado');
+                setSettings(credentials); setUrl(trackingGateway); setUsage(undefined); setRemoteAudit([]);
+                await audit(db, 'Gateway 1.3 selecionado');
               })} />}
           {typeof probe?.usage?.dailyUsed === 'number' && <Text style={s.muted}>
             {probe.usage.dailyUsed}/{probe.usage.dailyLimit} tentativas hoje · {probe.usage.neuronsUsed}/{probe.usage.neuronLimit} Neurons
@@ -880,11 +947,59 @@ function PersonalApp() {
             {line.neurons == null ? '' : ' · ' + line.neurons + ' Neurons'}</Text></Pressable>)}
         </View>
         <View style={s.card}><Text style={s.section}>Aparência da personagem</Text>
+          <View style={s.row}>{avatarChoices.map(choice => <Pressable key={choice} accessibilityRole="button"
+            accessibilityState={{selected: choice === avatarChoice && !avatarPhoto}}
+            onPress={() => void perform(async () => {await removeAvatar(); await option('avatarChoice',choice); await refresh(db);})}>
+            <Avatar choice={choice} ring={choice === avatarChoice && !avatarPhoto ? palette.blue : palette.border}/>
+            <Text style={s.muted}>{choice}</Text>
+          </Pressable>)}</View>
+          <View style={s.row}><Button label="Escolher imagem e recortar" onPress={() => void perform(pickAvatar)} />
+            {!!avatarPhoto && <Button label="Remover imagem" onPress={() => void perform(removeAvatar)} />}</View>
           <View style={s.row}>{[['Azul', palette.blueDark], ['Verde', '#BDEA9D'], ['Lavanda', '#CFB6FF'], ['Pêssego', '#FFC9AC']].map(([name, color]) =>
             <Button key={name} label={name} primary={portrait === color} onPress={() => void perform(async () => {
               await option('portrait', color);
               await refresh(db);
             })} />)}</View>
+        </View>
+        <View style={s.card}><Text style={s.section}>Voz</Text>
+          <Text style={s.muted}>Velocidade da leitura de respostas</Text>
+          <View style={s.row}>{[.8,1,1.2].map(rate => <Button key={rate} label={rate.toLocaleString('pt-BR')+'×'}
+            primary={voiceRate===rate} onPress={() => void perform(async () => {await option('voiceRate',String(rate)); await refresh(db);})} />)}</View>
+        </View>
+        <View style={s.card}><Text style={s.section}>Objetivos acompanhados</Text>
+          {tracking ? <>
+            <Text style={s.muted}>Nível 2 · Revisões no servidor. As iniciativas chegam à conversa quando o app se conecta.</Text>
+            <Button label={tracking.enabled ? 'Pausar acompanhamento' : 'Autorizar acompanhamento'} onPress={() =>
+              confirm(tracking.enabled ? 'Pausar revisões?' : 'Autorizar revisões agendadas?',
+                'Somente os objetivos que você cadastrar aqui serão revisados pelo servidor. Use títulos e pendências que possa compartilhar.',
+                () => change('/initiative/permission','POST',{enabled:!tracking.enabled}))} />
+            {tracking.enabled && <>
+              <Field label="Título do objetivo" value={projectTitle} change={setProjectTitle} max={80} />
+              <Field label="Pendência a revisar" value={projectPending} change={setProjectPending} max={240} />
+              <Field label="Revisar em quantos minutos?" value={projectMinutes} change={setProjectMinutes} max={6} />
+              <Button primary label="Agendar revisão" onPress={() => void perform(async () => {
+                const minutes=Number(projectMinutes);
+                if (!Number.isInteger(minutes) || minutes<1 || minutes>525600) throw Error('Informe entre 1 e 525.600 minutos.');
+                if (!projectTitle.trim() || !projectPending.trim()) throw Error('Preencha o título e a pendência.');
+                confirm('Enviar objetivo para acompanhamento?', 'O título, a pendência e o horário serão armazenados no gateway.',
+                  async () => {
+                    await change('/initiative/projects','POST',{id:randomUUID(),title:projectTitle,pending:projectPending,due:Date.now()+minutes*60000});
+                    setProjectTitle('');setProjectPending('');
+                  });
+              })} />
+            </>}
+            {tracking.projects.map(item => <View key={item.id} style={s.card}>
+              <Text style={s.text}>{item.title}</Text><Text style={s.muted}>{item.pending} · {new Date(item.due).toLocaleString('pt-BR')}</Text>
+              <Button label={item.active ? 'Pausar objetivo' : 'Retomar objetivo'} onPress={() =>
+                void perform(() => change('/initiative/projects','PATCH',{id:item.id,active:!item.active}))} />
+              <Button label="Excluir objetivo" onPress={() => confirm('Excluir objetivo acompanhado?', 'A revisão e o registro vinculado serão removidos do gateway.',
+                () => change('/initiative/projects','DELETE',{id:item.id}))} />
+            </View>)}
+            {tracking.initiatives.map(item => <Pressable key={item.id} accessibilityRole="button" onPress={() => useInitiative(item)}>
+              <Text style={s.label}>{item.title} · {item.state==='new'?'Nova':item.state==='read'?'Lida':'Dispensada'}</Text>
+              <Text style={s.muted}>{item.origin} · {item.urgency} · {new Date(item.occurred).toLocaleString('pt-BR')}</Text>
+            </Pressable>)}
+          </> : <Text style={s.muted}>Conecte-se ao gateway 1.3 da IA Pessoal para acompanhar objetivos.</Text>}
         </View>
         <View style={s.card}><Text style={s.section}>Autonomia</Text>
           <Text style={s.text}>Livre · Busca local e bateria de testes com dados fixos.</Text>

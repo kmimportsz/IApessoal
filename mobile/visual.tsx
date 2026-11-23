@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AccessibilityInfo, Animated, AppState, Easing, Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import Svg, { Path } from 'react-native-svg';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 
 export const palette = {
   base: '#080B12', panel: '#0E1420', user: '#082B60', assistant: '#171C26',
@@ -40,11 +40,30 @@ export function IconButton({ name, label, onPress, accent = false, disabled = fa
 
 export type AvatarState = 'neutral' | 'listening' | 'thinking' | 'speaking' | 'offline';
 const statusColors = {neutral: '#68C7A7', listening: '#97C7FF', thinking: '#74A9FF', speaking: '#B5A3FF', offline: '#8190A8'};
-export function Avatar({ state = 'neutral', small = false, ring = palette.blueDark }: {
-  state?: AvatarState; small?: boolean; ring?: string;
+export const avatarChoices = ['Órbita','Minimalista','Explorador','Clássico'] as const;
+export type AvatarChoice = typeof avatarChoices[number];
+export function Avatar({ state = 'neutral', small = false, ring = palette.blueDark, choice = 'Clássico', photo }: {
+  state?: AvatarState; small?: boolean; ring?: string; choice?: AvatarChoice; photo?: string;
 }) {
   return <View accessible={false} style={[v.avatar, small && v.small, {borderColor: ring}]}>
-    <Image source={require('./assets/portrait.png')} style={v.portrait} />
+    {photo || choice === 'Clássico' ? <Image source={photo ? {uri:photo} : require('./assets/portrait.png')} style={v.portrait} /> :
+      <Svg width="100%" height="100%" viewBox="0 0 64 64">
+        <Circle cx="32" cy="32" r="32" fill={choice==='Explorador'?'#182F43':'#0C2039'} />
+        {choice === 'Órbita' ? <>
+          <Circle cx="32" cy="32" r="14" fill="#729EE6"/>
+          <Path d="M9 37C26 16 58 15 55 27C52 42 17 53 9 37Z" stroke="#D0E5FF" strokeWidth="3" fill="none"/>
+        </> : choice === 'Minimalista' ? <>
+          <Rect x="15" y="20" width="34" height="26" rx="11" fill="#6096E4" />
+          <Circle cx="26" cy="32" r="2" fill="#122846"/><Circle cx="38" cy="32" r="2" fill="#122846"/>
+          <Path d="M28 38Q32 40 36 38" stroke="#122846" strokeWidth="2" fill="none"/>
+        </> : <>
+          <Path d="M8 62Q14 43 32 43Q50 43 56 62" fill="#2D6286"/>
+          <Circle cx="32" cy="30" r="16" fill="#D8AA88"/>
+          <Path d="M17 29Q13 7 35 9Q51 11 48 30L39 20L29 24Z" fill="#10283A"/>
+          <Circle cx="28" cy="33" r="1.8" fill="#192838"/><Circle cx="38" cy="33" r="1.8" fill="#192838"/>
+          <Path d="M28 40Q34 44 39 39" stroke="#674738" fill="none" strokeWidth="2"/>
+        </>}
+      </Svg>}
     {!small && <View style={[v.avatarDot, {backgroundColor: statusColors[state]}]} />}
   </View>;
 }

@@ -1,5 +1,7 @@
 # Inteligência Pessoal Evolutiva
 
+Veja a [auditoria e o roteiro da versão 1.3](server/cloudflare/V1.3.md).
+
 A [versão 1.2.1](server/cloudflare/V1.2.1.md) acrescenta diagnóstico e recuperação de solicitações sem repetir inferências.
 
 A [versão 1.2](server/cloudflare/V1.2.md) adiciona identidade verificável, seleção de modelo e contexto local revisável.

@@ -53,3 +53,13 @@ test('Recuperação local escolhe informação pertinente e exclui conteúdo pri
   assert.equal(relevantMemory('Oi', [shared]), undefined);
   assert.equal(memoryKey(' AÇÃO,  nova! '), memoryKey('acao nova'));
 });
+
+test('Continuação sugere só uma troca recente e não herda memória vinculada', async () => {
+  const {recentContext} = await import('./core.ts');
+  const previous={prompt:'Um projeto de teste',reply:'Resposta anterior',memory_id:null,reply_at:10000};
+  assert.match(recentContext('E se mudar?',previous,20000) ?? '', /Resposta anterior/);
+  assert.equal(recentContext('Outro tema',previous,20000),undefined);
+  assert.equal(recentContext('Continue',{...previous,memory_id:'privada'},20000),undefined);
+  assert.equal(recentContext('Continue',{...previous,prompt:'Contexto escolhido pelo usuário: teste'},20000),undefined);
+  assert.equal(recentContext('Continue',previous,4000000),undefined);
+});

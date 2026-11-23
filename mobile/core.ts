@@ -93,3 +93,11 @@ export function relevantMemory(prompt: string, memories: Memory[]): Memory | und
     .filter(item => item.score > 0)
     .sort((a, b) => b.score - a.score || b.memory.updated - a.memory.updated)[0]?.memory;
 }
+
+/** A short, explicit continuation uses a single recent exchange without inherited memory context. */
+export function recentContext(question: string, previous?: {prompt:string;reply:string|null;memory_id:string|null;reply_at:number|null}, now = Date.now()) {
+  if (!/^(?:continue\b|voltando\b|sobre isso\b|e se\b|por que\b|como assim\b)/iu.test(question.trim()) ||
+      !previous?.reply || !previous.reply_at || now - previous.reply_at > 3_600_000 || previous.memory_id ||
+      previous.prompt.startsWith('Contexto escolhido pelo usuário:')) return undefined;
+  return ('Mensagem anterior: ' + previous.prompt.slice(0, 450) + '\nResposta anterior: ' + previous.reply.slice(0, 750));
+}

@@ -1,4 +1,5 @@
 import { identity, officialIdentity } from './persona.mjs';
+import { initiativeRoute, reviewProjects } from './initiative.mjs';
 import { setupPage } from './setup.mjs';
 import { describe, idPattern, interpret, providerFailure, readReceipt, replyTtl, seal, unseal } from './recovery.mjs';
 
@@ -229,6 +230,10 @@ export default {
       }
       if (request.method === 'POST' && pathname === '/pair') return await pair(request, env);
       if (!await authorized(request, env)) return error('Credencial inválida.', 401);
+      if (pathname === '/initiative' || pathname.startsWith('/initiative/')) {
+        return await initiativeRoute({path: pathname, method: request.method, db: env.DB,
+          read: limit => readJson(request, limit), now: now.getTime()});
+      }
       if (request.method === 'GET' && pathname === '/status') {
         const usage = env.DB && await env.DB.prepare(
           'SELECT COUNT(*) AS attempts, COALESCE(SUM(neurons),0) AS neurons FROM ai_calls_v12 WHERE day=?'
@@ -261,6 +266,7 @@ export default {
     }
   },
   async scheduled(_event, env) {
+    await reviewProjects(env.DB, Date.now());
     await env.DB.prepare('UPDATE request_recovery SET sealed_reply=NULL WHERE expires <= ? AND sealed_reply IS NOT NULL')
       .bind(Date.now()).run();
   }

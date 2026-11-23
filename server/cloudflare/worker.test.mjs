@@ -184,3 +184,28 @@ test('Cem tentativas bloqueiam novas inferências mesmo com Neurons sobrando', a
   assert.equal((await call('/chat', job())).status, 402);
   assert.equal(queued.length, 0);
 });
+
+test('Objetivos exigem autorização e o agendamento gera um único evento verificável', async t => {
+  const {call, env, count, db} = setup(t);
+  const id=crypto.randomUUID();
+  const due=Date.now()+60_000;
+  const project={id,title:'Projeto de teste',pending:'Conferir números de referência',due};
+  assert.equal((await call('/initiative/projects',project)).status,409);
+  assert.equal((await call('/initiative/permission',{enabled:true},'y'.repeat(43))).status,401);
+  assert.equal((await call('/initiative/permission',{enabled:true})).status,200);
+  assert.equal((await call('/initiative/projects',project)).status,201);
+  await worker.scheduled({},env);
+  assert.equal((await (await call('/initiative')).json()).initiatives.length,0);
+  db.prepare('UPDATE tracked_projects SET due=? WHERE id=?').run(Date.now()-20,id);
+  await call('/initiative/permission',{enabled:false});
+  await worker.scheduled({},env);
+  assert.equal((await (await call('/initiative')).json()).initiatives.length,0);
+  await call('/initiative/permission',{enabled:true});
+  await worker.scheduled({},env);
+  await worker.scheduled({},env);
+  const events=(await (await call('/initiative')).json()).initiatives;
+  assert.equal(events.length,1);
+  assert.equal(events[0].id,id);
+  assert.equal(events[0].origin,'revisão agendada');
+  assert.equal(count(),0);
+});
