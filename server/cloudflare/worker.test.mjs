@@ -159,3 +159,28 @@ test('Entrada complexa mantém 120B e o gateway distingue resposta vazia de trun
   assert.equal(selectModel('oi', {}).label, 'GPT-OSS 20B');
   assert.equal(interpret({response:''}).code, 'empty_response');
 });
+
+test('Requisição temporalmente incerta pode ser consultada após uma entrada na fila sem confirmação', async t => {
+  const {call, job, queued, consume, env, count} = setup(t);
+  const a = job();
+  env.INFERENCE.send = async body => {
+    queued.push(body);
+    throw Error('A confirmação da fila se perdeu');
+  };
+  assert.equal((await call('/chat', a)).status, 502);
+  assert.equal((await call('/chat', a)).status, 202);
+  assert.equal(queued.length, 1);
+  await consume();
+  assert.equal((await (await call('/requests/' + a.id)).json()).state, 'finished');
+  assert.equal(count(), 1);
+});
+
+test('Cem tentativas bloqueiam novas inferências mesmo com Neurons sobrando', async t => {
+  const {call, job, db, queued} = setup(t);
+  const now = new Date();
+  const day = now.toISOString().slice(0,10);
+  const insert = db.prepare("INSERT INTO ai_calls_v12 VALUES (?,?,?,?,'finished','modelo',1)");
+  for (let i = 0; i < 100; i++) insert.run(crypto.randomUUID(),day,day.slice(0,7),now.getTime());
+  assert.equal((await call('/chat', job())).status, 402);
+  assert.equal(queued.length, 0);
+});
