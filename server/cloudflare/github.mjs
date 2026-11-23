@@ -32,28 +32,83 @@ async function boundedBody(stream, maximum) {
 
 const base64url = value => btoa(Array.from(value, b=>String.fromCharCode(b)).join(''))
   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-async function installationToken(env, repositoryId) {
-  const pem = env.GITHUB_PRIVATE_KEY.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g,'');
-  const key = await crypto.subtle.importKey('pkcs8',Uint8Array.from(atob(pem),v=>v.charCodeAt(0)),
+// PKCS#8 PrivateKeyInfo version 0 and the rsaEncryption AlgorithmIdentifier.
+const rsaPrivateKeyInfo = [0x02,0x01,0x00,0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01,0x05,0x00];
+
+function der(tag, bytes) {
+  const length = [];
+  for (let remaining = bytes.length; remaining > 0; remaining = Math.floor(remaining / 256)) {
+    length.unshift(remaining % 256);
+  }
+  const encodedLength = bytes.length < 128 ? [bytes.length] : [0x80 | length.length, ...length];
+  return Uint8Array.from([tag, ...encodedLength, ...bytes]);
+}
+
+function privateKeyDer(pem) {
+  const match = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----([A-Za-z0-9+/=\s]+)-----END \1-----$/.exec(pem.trim());
+  if (!match) throw Error('Formato PEM da chave GitHub inválido.');
+  const bytes = Uint8Array.from(atob(match[2].replace(/\s/g,'')), v=>v.charCodeAt(0));
+  if (match[1] === 'PRIVATE KEY') return bytes;
+  return der(0x30, [...rsaPrivateKeyInfo, ...der(0x04, bytes)]);
+}
+
+class GitHubStatusError extends Error {
+  constructor(status) { super('GitHub HTTP error'); this.status=status; }
+}
+
+async function installationToken(env, repositoryId, setStage=()=>{}) {
+  setStage(2);
+  const key = await crypto.subtle.importKey('pkcs8',privateKeyDer(env.GITHUB_PRIVATE_KEY),
     {name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['sign']);
+  setStage(3);
   const now = Math.floor(Date.now()/1000);
   const unsigned = [ {alg:'RS256',typ:'JWT'}, {iat:now-60,exp:now+480,iss:env.GITHUB_APP_ID} ]
     .map(v=>base64url(encoder.encode(JSON.stringify(v)))).join('.');
   const sig = base64url(new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',key,encoder.encode(unsigned))));
+  setStage(4);
   const result = await github('/app/installations/'+env.GITHUB_INSTALLATION_ID+'/access_tokens',unsigned+'.'+sig,
     repositoryId ? {repository_ids:[repositoryId],permissions:{contents:'read',issues:'read',pull_requests:'read'}} :
-      {permissions:{metadata:'read'}});
+      {permissions:{metadata:'read'}},524_288,setStage);
+  setStage(10);
   if (typeof result.token!=='string') throw Error('Instalação indisponível');
   return result.token;
 }
 
-async function github(path, token, body, maximum=524_288) {
-  const r = await fetch(api+path,{redirect:'error',signal:AbortSignal.timeout(8000),method:body?'POST':'GET',
-    headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','Content-Type':'application/json',
-      'User-Agent':'IA-Pessoal-1.5','X-GitHub-Api-Version':'2022-11-28'},
-    ...(body?{body:JSON.stringify(body)}:{})});
-  if (!r.ok) { await r.body?.cancel(); throw Error('GitHub '+r.status); }
-  return JSON.parse(decoder.decode(await boundedBody(r.body,maximum)));
+async function github(path, token, body, maximum=524_288, setStage=()=>{}) {
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),8000);
+  try {
+    let target=new URL(api+path);
+    const options={redirect:'manual',signal:controller.signal,method:body?'POST':'GET',
+      headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','Content-Type':'application/json',
+        'User-Agent':'IA-Pessoal-1.5','X-GitHub-Api-Version':'2022-11-28'},
+      ...(body?{body:JSON.stringify(body)}:{})};
+    let r;
+    for(let redirects=0;;redirects++){
+      r=await fetch(target.href,options);
+      if(![301,302,303,307,308].includes(r.status))break;
+      const location=r.headers.get('Location');
+      await r.body?.cancel().catch(()=>{});
+      setStage(11);
+      if(!location)throw new GitHubStatusError(r.status);
+      const next=new URL(location,target);
+      setStage(12);
+      if(next.origin!==api || next.username || next.password)throw new GitHubStatusError(r.status);
+      setStage(13);
+      if(body && next.pathname.replace(/\/$/,'')!==new URL(api+path).pathname)
+        throw new GitHubStatusError(r.status);
+      setStage(14);
+      if(redirects>=2 || next.href===target.href)throw new GitHubStatusError(r.status);
+      target=next;
+    }
+    setStage(8);
+    if (!r.ok) {
+      await r.body?.cancel().catch(()=>{});
+      throw new GitHubStatusError(r.status);
+    }
+    setStage(9);
+    return JSON.parse(decoder.decode(await boundedBody(r.body,maximum)));
+  } finally { clearTimeout(timer); }
 }
 
 export async function verifyWebhook(bytes, signature, secret) {
@@ -143,10 +198,13 @@ export async function syncGitHubInventory(env,now=Date.now()) {
     .bind(lease,now+60_000,generation,state.installation,now,state.page,now).first();
   if(!claimed)return;
   const guard="EXISTS (SELECT 1 FROM github_account_v15 WHERE singleton=1 AND lease=? AND state!='disconnected')";
+  let stage=1;
   try {
-    const token=await installationToken(env);
+    const token=await installationToken(env,undefined,value=>{stage=value;});
+    stage=5;
     const page=claimed.page;
     const result=await github('/installation/repositories?per_page=50&page='+page,token,undefined,1_048_576);
+    stage=6;
     if(!Array.isArray(result.repositories)||!Number.isSafeInteger(result.total_count)||result.total_count<0) throw Error('Inventário inválido');
     const rows=result.repositories.filter(r=>safeId(r.id)&&namePattern.test(r.full_name)).map(r=>({
       id:r.id,name:r.full_name,description:String(r.description??'').slice(0,240),
@@ -170,10 +228,15 @@ export async function syncGitHubInventory(env,now=Date.now()) {
     writes.push(env.DB.prepare(`UPDATE github_account_v15 SET page=?,generation=?,next_sync=?,last_sync=COALESCE(?,last_sync),
       lease=NULL,sync_error=0 WHERE lease=?`).bind(complete?1:page+1,complete?null:generation,complete?now+6*hour:now,
         complete?now:null,lease));
+    stage=7;
     await env.DB.batch(writes);
-  }catch{
-    await env.DB.prepare('UPDATE github_account_v15 SET lease=NULL,sync_error=1,next_sync=? WHERE lease=?')
-      .bind(now+30*60_000,lease).run();
+  }catch(error){
+    const kinds={TypeError:1,SyntaxError:2,TimeoutError:3,AbortError:4,InvalidCharacterError:5,DataError:6,Error:7};
+    const transportHints=[/not a function/i,/redirect/i,/header/i,/subrequest/i,/network|connect|fetch failed/i,/illegal invocation/i,/readable|stream/i];
+    const hint=error?.name==='TypeError'?transportHints.findIndex(pattern=>pattern.test(error.message)):-1;
+    const diagnostic=stage*1000+(error instanceof GitHubStatusError?error.status:hint>=0?20+hint:kinds[error?.name]??0);
+    await env.DB.prepare('UPDATE github_account_v15 SET lease=NULL,sync_error=?,next_sync=? WHERE lease=?')
+      .bind(diagnostic,now+30*60_000,lease).run();
   }
 }
 

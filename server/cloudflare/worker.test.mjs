@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
@@ -312,16 +312,17 @@ test('Backup remoto ignora projetos duplicados e nunca reativa a agenda importad
 
 test('GitHub exige autorização, verifica webhook e analisa arquivo real do transporte simulado', async t=>{
   const {db,env,call}=setup(t);
-  const {exportKey}=await import('node:crypto').then(c=>({exportKey:()=>c.generateKeyPairSync('rsa',{modulusLength:2048})
-    .privateKey.export({type:'pkcs8',format:'pem'})}));
-  Object.assign(env,{GITHUB_APP_ID:'123',GITHUB_INSTALLATION_ID:'456',GITHUB_PRIVATE_KEY:exportKey(),
+  const {privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:2048});
+  Object.assign(env,{GITHUB_APP_ID:'123',GITHUB_INSTALLATION_ID:'456',
+    GITHUB_PRIVATE_KEY:privateKey.export({type:'pkcs1',format:'pem'}).replace(/\n/g,'\r\n'),
     GITHUB_WEBHOOK_SECRET:'segredo de teste'});
   const commit='a'.repeat(40), tree='b'.repeat(40);
   const list={id:12,full_name:'owner/repo',description:'Privado',private:true};
+  let redirectOutsideGitHub=false;
   t.mock.method(globalThis,'fetch',async (address, options)=>{
     const {hostname,pathname,searchParams}=new URL(address);
     assert.equal(hostname,'api.github.com');
-    assert.equal(options.redirect,'error');
+    assert.equal(options.redirect,'manual');
     const out={
       '/installation/repositories':{repositories:[list],total_count:1},
       '/repos/owner/repo':{...list,default_branch:'main'},
@@ -332,6 +333,10 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
     };
     if(options.method==='POST'){
       assert.equal(pathname,'/app/installations/456/access_tokens');
+      if(redirectOutsideGitHub)return new Response(null,{status:307,headers:{Location:'https://example.org/token'}});
+      if(!searchParams.has('canonical'))return new Response(null,{status:307,headers:{Location:pathname+'?canonical=1'}});
+      const [header,claims,signature]=options.headers.Authorization.slice('Bearer '.length).split('.');
+      assert.ok(verify('RSA-SHA256',Buffer.from(header+'.'+claims),publicKey,Buffer.from(signature,'base64url')));
       const payload=JSON.parse(options.body);
       if(payload.repository_ids) assert.deepEqual(payload.repository_ids,[12]);
       assert.ok(Object.values(payload.permissions).every(value=>value==='read'));
@@ -371,6 +376,13 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
   assert.equal((await webhook(signature)).status,200);
   assert.equal((await webhook(signature)).status,200);
   assert.equal(db.prepare('SELECT revision FROM github_repos_v15').get().revision,1);
+  env.GITHUB_PRIVATE_KEY=privateKey.export({type:'pkcs8',format:'pem'});
+  assert.equal((await call('/github/installations')).status,200);
+  redirectOutsideGitHub=true;
+  const callsBefore=fetch.mock.callCount();
+  assert.equal((await call('/github/installations')).status,502);
+  assert.equal(fetch.mock.callCount(),callsBefore+1);
+  redirectOutsideGitHub=false;
   await call('/github/repository',{id:12,state:'paused'});
   await worker.scheduled({},env);
   assert.equal(inferences,1);
@@ -387,7 +399,6 @@ test('Uma descoberta jamais pode citar arquivo ou linha ausente do material',asy
 
 test('Inventário global pagina, preserva pausas e reconhece novos, arquivados e removidos',async t=>{
   const {db,env,call}=setup(t);
-  const {generateKeyPairSync}=await import('node:crypto');
   const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
   Object.assign(env,{GITHUB_APP_ID:'123',GITHUB_INSTALLATION_ID:'456',GITHUB_PRIVATE_KEY:privateKey,GITHUB_WEBHOOK_SECRET:'teste'});
   const {syncGitHubInventory}=await import('./github.mjs');
