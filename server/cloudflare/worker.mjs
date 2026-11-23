@@ -1,4 +1,4 @@
-import { githubRoute, githubWebhook, runGitHubMonitor } from './github.mjs';
+import { githubRoute, githubWebhook, runGitHubMonitor, syncGitHubInventory } from './github.mjs';
 import { backupRoute } from './backup.mjs';
 import { automationRoute, runProjectAnalyses } from './automation.mjs';
 import { calculate, calculatorTool } from './calculator.mjs';
@@ -327,7 +327,7 @@ export default {
   async scheduled(_event, env) {
     await Promise.all([
       processReview(env),
-      runGitHubMonitor(env,{model:repositoryModel,estimate:reservedNeurons,charge:neurons}),
+      syncGitHubInventory(env).then(()=>runGitHubMonitor(env,{model:repositoryModel,estimate:reservedNeurons,charge:neurons})),
       env.DB.prepare('UPDATE request_recovery SET sealed_reply=NULL WHERE expires <= ? AND sealed_reply IS NOT NULL')
         .bind(Date.now()).run(),
     ]);

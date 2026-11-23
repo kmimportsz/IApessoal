@@ -323,7 +323,7 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
     assert.equal(hostname,'api.github.com');
     assert.equal(options.redirect,'error');
     const out={
-      '/installation/repositories':{repositories:[list]},
+      '/installation/repositories':{repositories:[list],total_count:1},
       '/repos/owner/repo':{...list,default_branch:'main'},
       '/repos/owner/repo/commits/main':{sha:commit,files:[{filename:'src/index.js'}],commit:{tree:{sha:tree}}},
       ['/repos/owner/repo/git/trees/'+tree]:{tree:[]},
@@ -351,7 +351,6 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
   };
   assert.equal((await call('/github/installations',undefined,'z'.repeat(43))).status,401);
   assert.equal((await call('/github/repository',{id:13,state:'active'})).status,404);
-  assert.equal((await call('/github/repository',{id:12,state:'active'})).status,200);
   await Promise.all([worker.scheduled({},env),worker.scheduled({},env)]);
   assert.equal(inferences,1);
   const status=await (await call('/github')).json();
@@ -383,4 +382,51 @@ test('Uma descoberta jamais pode citar arquivo ou linha ausente do material',asy
   const {evidence}=await import('./github.mjs');
   const f={path:'file.js',line:2,priority:'alta',confidence:'baixa',problem:'x',impact:'y',suggestion:'z'};
   assert.throws(()=>evidence({response:JSON.stringify({finding:f})},[{path:'file.js',lines:['linha 1']}]),/Evidência inválida/);
+});
+
+
+test('Inventário global pagina, preserva pausas e reconhece novos, arquivados e removidos',async t=>{
+  const {db,env,call}=setup(t);
+  const {generateKeyPairSync}=await import('node:crypto');
+  const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  Object.assign(env,{GITHUB_APP_ID:'123',GITHUB_INSTALLATION_ID:'456',GITHUB_PRIVATE_KEY:privateKey,GITHUB_WEBHOOK_SECRET:'teste'});
+  const {syncGitHubInventory}=await import('./github.mjs');
+  let inventory=Array.from({length:53},(_,i)=>({id:i+1,full_name:'owner/repo-'+(i+1),private:i===52}));
+  let fail=false;
+  t.mock.method(globalThis,'fetch',async (url,options)=>{
+    if(options.method==='POST')return Response.json({token:'fake'});
+    if(fail)return new Response(null,{status:503});
+    const page=Number(new URL(url).searchParams.get('page'));
+    return Response.json({total_count:inventory.length,repositories:inventory.slice((page-1)*50,page*50)});
+  });
+  await syncGitHubInventory(env,Date.now());
+  const first=await (await call('/github')).json();
+  assert.equal(first.repos.length,50);
+  assert.equal(first.account.lastSync,null);
+  await syncGitHubInventory(env,Date.now());
+  assert.equal((await (await call('/github')).json()).repos.length,53);
+  await call('/github/repository',{id:2,state:'paused'});
+  await call('/github/account',{action:'paused'});
+  inventory=inventory.filter(v=>v.id!==1).map(v=>v.id===3?{...v,archived:true}:v);
+  inventory.push({id:54,full_name:'owner/new'});
+  await syncGitHubInventory(env,Date.now());
+  assert.equal(db.prepare('SELECT availability FROM github_inventory_v15 WHERE repo=1').get().availability,'available');
+  fail=true;
+  await syncGitHubInventory(env,Date.now());
+  assert.equal(db.prepare('SELECT availability FROM github_inventory_v15 WHERE repo=1').get().availability,'available');
+  assert.equal((await (await call('/github')).json()).account.syncError,true);
+  fail=false;
+  await call('/github/account',{action:'sync'});
+  await syncGitHubInventory(env,Date.now());
+  const status=await (await call('/github')).json();
+  assert.equal(status.account.state,'paused');
+  assert.equal(status.repos.find(v=>v.id===1).availability,'removed');
+  assert.equal(status.repos.find(v=>v.id===2).state,'paused');
+  assert.equal(status.repos.find(v=>v.id===3).availability,'archived');
+  assert.equal(status.repos.find(v=>v.id===53).private,1);
+  assert.equal(status.repos.find(v=>v.id===54).state,'active');
+  await call('/github/account',{action:'disconnected'});
+  await syncGitHubInventory(env,Date.now());
+  assert.equal((await (await call('/github')).json()).repos.length,0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM github_inventory_v15').get().n,54);
 });

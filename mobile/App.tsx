@@ -25,10 +25,11 @@ const voice = requireOptionalNativeModule<typeof VoiceModule>('ExpoSpeechRecogni
 const tabs = ['Conversa', 'Projetos', 'Memórias', 'Laboratório', 'Ajustes'] as const;
 type Tab = typeof tabs[number];
 type Thread = {id:string;title:string;archived:number};
-type GitHubRepo = {id:number;name:string;description:string;state?:'active'|'paused'|'disconnected';head?:string;checked?:number;due?:number};
+type GitHubRepo = {id:number;name:string;description:string;state?:'active'|'paused'|'disconnected';head?:string;checked?:number;due?:number;analyzed?:number;availability:'available'|'archived'|'removed';private?:number};
 type GitHubFinding = {path:string;line:number;excerpt:string;problem:string;impact:string;suggestion:string;priority:string;confidence:string};
 type GitHubRun = {id:string;repo:number;commit_sha:string;created:number;state:string;finding_id?:string;finding_state?:string;finding?:GitHubFinding};
-type GitHubStatus = {configured:boolean;repos:GitHubRepo[];history:GitHubRun[]};
+type GitHubStatus = {configured:boolean;repos:GitHubRepo[];history:GitHubRun[];slug?:string;
+  account?:{state:'active'|'paused'|'disconnected';lastSync:number|null;syncError:boolean}};
 type Analysis = {run_id:string;project_id:string;cycle:number;title:string;created:number;state:string;summary?:string;action?:string};
 type Automation = {entries:Analysis[];grants:{project_id:string;enabled:number}[];push?:{start_hour:number;end_hour:number}|null};
 type Job = { memory_auto?:number; thread_id?:string; id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; response_model?: string | null; recovery_state?: string | null; memory_id: string | null; memory_version: number | null };
@@ -117,7 +118,7 @@ function PersonalApp() {
   const [autoGrants,setAutoGrants]=useState<{id:string;version:number}[]>([]);
   const [automation,setAutomation]=useState<Automation>();
   const [github,setGithub]=useState<GitHubStatus>();
-  const [githubChoices,setGithubChoices]=useState<GitHubRepo[]>([]);
+  const [githubHistory,setGithubHistory]=useState<{repo:number;runs:GitHubRun[]}>();
   const [pushStart,setPushStart]=useState('8');
   const [pushEnd,setPushEnd]=useState('22');
   const [researching,setResearching]=useState(false);
@@ -465,7 +466,7 @@ function PersonalApp() {
   }
 
   useEffect(()=>{
-    if(settings.url!==trackingGateway||!settings.token||connected===false){setAutomation(undefined);setGithub(undefined);setGithubChoices([]);return;}
+    if(settings.url!==trackingGateway||!settings.token||connected===false){setAutomation(undefined);setGithub(undefined);setGithubHistory(undefined);return;}
     let active=true;
     let inFlight=false;
     async function load(){
@@ -492,9 +493,21 @@ function PersonalApp() {
     const value=await request(path,payload);
     const data=await value.json();
     if(!value.ok) throw Error(data.error??'Não foi possível acessar a integração GitHub.');
-    if(path==='/github/installations'){setGithubChoices(data.repos);return;}
+
     const status=await request('/github');
-    if(status.ok)setGithub(await status.json());
+    if(status.ok){
+      const current=await status.json() as GitHubStatus;
+      setGithub(current);
+      if(current.account?.state==='disconnected')setGithubHistory(undefined);
+      else if(githubHistory && path==='/github/finding')await loadGithubHistory(githubHistory.repo);
+    }
+  }
+
+  async function loadGithubHistory(repo:number) {
+    const result=await request('/github/repository/'+repo+'/history');
+    if(!result.ok)throw Error('Não foi possível obter o histórico.');
+    const data=await result.json();
+    setGithubHistory({repo,runs:data.history});
   }
 
   async function configurePush() {
@@ -1137,27 +1150,49 @@ function PersonalApp() {
         <Text style={s.title}>Projetos</Text>
         {github && <View style={s.card}>
           <Text style={s.section}>Repositórios GitHub</Text>
-          {github.configured ? <Button label="Escolher repositório autorizado" onPress={()=>void perform(()=>githubAction('/github/installations'))}/> :
-            <Text style={s.muted}>A instalação da GitHub App ainda precisa ser configurada no gateway.</Text>}
-          {githubChoices.filter(repo=>!github.repos.some(r=>r.id===repo.id&&r.state==='active')).map(repo=>
-            <Button key={repo.id} label={'Acompanhar '+repo.name} onPress={()=>confirm('Acompanhar este repositório?',
-              'A IA poderá ler arquivos e alterações autorizadas e enviar trechos ao modelo para análise.',
-              ()=>githubAction('/github/repository',{id:repo.id,state:'active'}))}/>)}
+          {(!github.configured || github.account?.state==='disconnected') &&
+            <Button label="Conectar conta GitHub" onPress={()=>void perform(async()=>{
+              if(github.account?.state==='disconnected' && github.configured){
+                confirm('Reconectar conta?', 'A IA voltará a analisar os repositórios autorizados na instalação.',
+                  ()=>githubAction('/github/account',{action:'active'}));
+              }else await Linking.openURL(github.slug?'https://github.com/apps/'+github.slug+'/installations/new':'https://github.com/settings/apps');
+            })}/>}
+          {github.account && github.account.state!=='disconnected' && <>
+            <Text style={s.muted}>{github.account.state==='active'?'Acompanhamento global ativo':'Acompanhamento global pausado'}
+              {github.account.lastSync?' · '+formatDate(github.account.lastSync):' · Primeira sincronização pendente'}</Text>
+            {github.account.syncError && <Text style={s.muted}>O GitHub não confirmou a sincronização. O gateway tentará novamente.</Text>}
+            <View style={s.row}>
+              <Button label="Sincronizar repositórios" onPress={()=>void perform(async()=>{
+                await githubAction('/github/account',{action:'sync'});
+                setNotice('Sincronização solicitada. O servidor atualizará a lista em segundo plano.');
+              })}/>
+              <Button label={github.account.state==='active'?'Pausar todos':'Ativar acompanhamento global'}
+                onPress={()=>void perform(()=>githubAction('/github/account',{action:github.account?.state==='active'?'paused':'active'}))}/>
+              <Button label="Desconectar conta" onPress={()=>confirm('Desconectar conta GitHub?',
+                'O servidor interromperá a leitura e as análises. Para revogar também a permissão, remova a instalação no GitHub.',
+                ()=>githubAction('/github/account',{action:'disconnected'}))}/>
+            </View>
+          </>}
+          {!github.configured && <Text style={s.muted}>Instale a GitHub App privada e configure o gateway antes de sincronizar.</Text>}
           {github.repos.map(repo=><View key={repo.id} style={s.card}>
             <Text style={s.label}>{repo.name}</Text>
             {!!repo.description && <Text style={s.muted}>{repo.description}</Text>}
-            <Text style={s.muted}>{repo.state==='active'?'Ativo':repo.state==='paused'?'Pausado':'Desconectado'}
+            <Text style={s.muted}>{repo.availability==='archived'?'Arquivado':repo.availability==='removed'?'Removido da instalação':
+                repo.state==='active'?(github.account?.state==='paused'?'Pausa global':'Ativo'):repo.state==='paused'?'Pausado':'Desconectado'}
+              {repo.private?' · Privado':''}
               {repo.head?' · '+repo.head.slice(0,12):''}
               {repo.checked?' · Última verificação '+formatDate(repo.checked):''}</Text>
-            {repo.state==='active' && !!repo.due && <Text style={s.muted}>Próxima verificação · {formatDate(repo.due)}</Text>}
-            {repo.state!=='disconnected' && <View style={s.row}>
+            {!!repo.analyzed && <Text style={s.muted}>Última análise · {formatDate(repo.analyzed)}</Text>}
+            {repo.availability==='available' && github.account?.state==='active' && repo.state==='active' && !!repo.due && <Text style={s.muted}>Próxima verificação · {formatDate(repo.due)}</Text>}
+            {repo.availability==='available' && <View style={s.row}>
               <Button label={repo.state==='active'?'Pausar':'Retomar'} onPress={()=>void perform(()=>githubAction('/github/repository',
                 {id:repo.id,state:repo.state==='active'?'paused':'active'}))}/>
-              <Button label="Desconectar" onPress={()=>confirm('Desconectar repositório?',
-                'O gateway deixará de consultar este repositório. Para revogar a permissão no GitHub, remova-o da instalação da GitHub App.',
-                ()=>githubAction('/github/repository',{id:repo.id,state:'disconnected'}))}/>
+
             </View>}
-            {github.history.filter(run=>run.repo===repo.id).map(run=>run.finding?findingCard(run,repo):
+            {repo.availability!=='removed' && repo.state!=='disconnected' &&
+              <Button label={githubHistory?.repo===repo.id?'Fechar histórico':'Ver histórico'}
+                onPress={()=>githubHistory?.repo===repo.id?setGithubHistory(undefined):void perform(()=>loadGithubHistory(repo.id))}/>}
+            {repo.availability!=='removed' && githubHistory?.repo===repo.id && githubHistory.runs.map(run=>run.finding?findingCard(run,repo):
               <Text key={run.id} style={s.muted}>{formatDate(run.created)} · {run.commit_sha.slice(0,12)} ·
                 {' '}{({running:'Em análise',reviewed:'Analisado',failed:'Falhou',no_files:'Sem arquivos elegíveis',duplicate:'Descoberta já registrada',
                   quota:'Aguardando cota',revoked:'Permissão alterada',unavailable:'Resultado indisponível'} as Record<string,string>)[run.state]??run.state}</Text>)}

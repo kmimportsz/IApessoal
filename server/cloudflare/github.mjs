@@ -79,10 +79,11 @@ export async function githubWebhook(request,env,now) {
   const joined = [];
   const unique=' AND NOT EXISTS(SELECT 1 FROM github_deliveries_v15 WHERE id=?)';
   if (event==='installation' && ['deleted','suspend'].includes(payload.action)) {
-    joined.push(env.DB.prepare("UPDATE github_repos_v15 SET state='disconnected',revision=revision+1,lease=NULL WHERE state!='disconnected'"+unique).bind(delivery));
+    joined.push(env.DB.prepare("UPDATE github_repos_v15 SET revision=revision+1,lease=NULL WHERE state!='disconnected'"+unique).bind(delivery));
   } else if (event==='installation_repositories' && Array.isArray(payload.repositories_removed)) {
     for (const repo of payload.repositories_removed.slice(0,40).filter(r=>safeId(r.id))) {
-      joined.push(env.DB.prepare("UPDATE github_repos_v15 SET state='disconnected',revision=revision+1,lease=NULL WHERE id=?"+unique).bind(repo.id,delivery));
+      joined.push(env.DB.prepare("UPDATE github_repos_v15 SET revision=revision+1,lease=NULL WHERE id=?"+unique).bind(repo.id,delivery),
+        env.DB.prepare("UPDATE github_inventory_v15 SET availability='removed' WHERE repo=?"+unique).bind(repo.id,delivery));
     }
   } else if (safeId(payload.repository?.id) && (
     (event==='push' && payload.ref==='refs/heads/'+payload.repository.default_branch && !payload.deleted) ||
@@ -90,6 +91,19 @@ export async function githubWebhook(request,env,now) {
     (event==='issues' && ['opened','reopened','closed','labeled'].includes(payload.action)))) {
     joined.push(env.DB.prepare("UPDATE github_repos_v15 SET dirty=1,revision=revision+1,due=MIN(CASE WHEN dirty=1 THEN due ELSE ? END,?) WHERE id=? AND state='active'"+unique)
       .bind(now+5*60_000,now+5*60_000,payload.repository.id,delivery));
+  }
+  if(event==='repository' && safeId(payload.repository?.id) && ['archived','deleted','transferred'].includes(payload.action)){
+    joined.push(env.DB.prepare('UPDATE github_inventory_v15 SET availability=? WHERE repo=? AND installation=?'+unique)
+      .bind(payload.action==='archived'?'archived':'removed',payload.repository.id,env.GITHUB_INSTALLATION_ID,delivery));
+  }
+  if (['installation','installation_repositories','repository'].includes(event)) {
+    joined.push(env.DB.prepare(`UPDATE github_account_v15 SET next_sync=MIN(next_sync,?)
+      WHERE singleton=1 AND installation=? AND state!='disconnected' AND page=1`+unique)
+      .bind(now,env.GITHUB_INSTALLATION_ID,delivery));
+  }
+  if (event==='installation' && ['deleted','suspend'].includes(payload.action)) {
+    joined.push(env.DB.prepare(`UPDATE github_account_v15 SET state=?,lease=NULL,page=1,generation=NULL
+      WHERE singleton=1 AND installation=?`+unique).bind(payload.action==='deleted'?'disconnected':'paused',env.GITHUB_INSTALLATION_ID,delivery));
   }
   if (joined.length) {
     joined.push(env.DB.prepare('INSERT OR IGNORE INTO github_deliveries_v15 VALUES (?,?)').bind(delivery,now));
@@ -106,39 +120,123 @@ async function installationRepos(env) {
   }));
 }
 
-export async function githubRoute({env,path,method,read,now}) {
-  if (method==='GET' && path==='/github') {
-    const repos=(await env.DB.prepare("SELECT id,name,description,state,due,checked,head FROM github_repos_v15 ORDER BY name LIMIT 30").all()).results;
-    const runs=(await env.DB.prepare(`SELECT r.id,r.repo,r.commit_sha,r.created,r.state,r.sealed,
+
+async function account(env,now) {
+  if(!configured(env)) return null;
+  const existing=await env.DB.prepare('SELECT * FROM github_account_v15 WHERE singleton=1').first();
+  if(existing)return existing.installation===env.GITHUB_INSTALLATION_ID?existing:null;
+  await env.DB.prepare(`INSERT OR IGNORE INTO github_account_v15(singleton,installation,state,next_sync)
+    VALUES(1,?,'active',?)`).bind(env.GITHUB_INSTALLATION_ID,now).run();
+  return env.DB.prepare('SELECT * FROM github_account_v15 WHERE singleton=1 AND installation=?')
+    .bind(env.GITHUB_INSTALLATION_ID).first();
+}
+
+export async function syncGitHubInventory(env,now=Date.now()) {
+  if(env.DEPLOYMENT_TIER!=='workers-free-confirmed') return;
+  const state=await account(env,now);
+  if(!state || state.state==='disconnected' || state.next_sync>now) return;
+  const lease=crypto.randomUUID();
+  const generation=state.generation??crypto.randomUUID();
+  const claimed=await env.DB.prepare(`UPDATE github_account_v15 SET lease=?,lease_until=?,generation=?
+    WHERE singleton=1 AND installation=? AND state!='disconnected' AND next_sync<=? AND page=? AND
+    (lease IS NULL OR lease_until<=?) RETURNING page`)
+    .bind(lease,now+60_000,generation,state.installation,now,state.page,now).first();
+  if(!claimed)return;
+  const guard="EXISTS (SELECT 1 FROM github_account_v15 WHERE singleton=1 AND lease=? AND state!='disconnected')";
+  try {
+    const token=await installationToken(env);
+    const page=claimed.page;
+    const result=await github('/installation/repositories?per_page=50&page='+page,token,undefined,1_048_576);
+    if(!Array.isArray(result.repositories)||!Number.isSafeInteger(result.total_count)||result.total_count<0) throw Error('Inventário inválido');
+    const rows=result.repositories.filter(r=>safeId(r.id)&&namePattern.test(r.full_name)).map(r=>({
+      id:r.id,name:r.full_name,description:String(r.description??'').slice(0,240),
+      availability:r.archived||r.disabled?'archived':'available',private:Number(r.private===true),
+    }));
+    const complete=result.repositories.length<50;
+    const payload=JSON.stringify(rows);
+    const writes=[
+      env.DB.prepare(`INSERT INTO github_repos_v15(id,name,description,state,due)
+        SELECT json_extract(j.value,'$.id'),json_extract(j.value,'$.name'),json_extract(j.value,'$.description'),'active',?
+        FROM json_each(?) j WHERE ${guard}
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description`).bind(now,payload,lease),
+      env.DB.prepare(`INSERT INTO github_inventory_v15(repo,installation,generation,availability,private)
+        SELECT json_extract(j.value,'$.id'),?,?,json_extract(j.value,'$.availability'),json_extract(j.value,'$.private')
+        FROM json_each(?) j WHERE ${guard} ON CONFLICT(repo) DO UPDATE SET
+        installation=excluded.installation,generation=excluded.generation,availability=excluded.availability,private=excluded.private`)
+        .bind(state.installation,generation,payload,lease),
+    ];
+    if(complete) writes.push(env.DB.prepare(`UPDATE github_inventory_v15 SET availability='removed'
+      WHERE installation=? AND generation!=? AND availability!='removed' AND ${guard}`).bind(state.installation,generation,lease));
+    writes.push(env.DB.prepare(`UPDATE github_account_v15 SET page=?,generation=?,next_sync=?,last_sync=COALESCE(?,last_sync),
+      lease=NULL,sync_error=0 WHERE lease=?`).bind(complete?1:page+1,complete?null:generation,complete?now+6*hour:now,
+        complete?now:null,lease));
+    await env.DB.batch(writes);
+  }catch{
+    await env.DB.prepare('UPDATE github_account_v15 SET lease=NULL,sync_error=1,next_sync=? WHERE lease=?')
+      .bind(now+30*60_000,lease).run();
+  }
+}
+
+async function githubHistory(env,installation,repository) {
+  const runs=(await env.DB.prepare(`SELECT r.id,r.repo,r.commit_sha,r.created,r.state,r.sealed,
       f.id AS finding_id,f.state AS finding_state FROM github_runs_v15 r
       JOIN github_repos_v15 p ON p.id=r.repo
-      LEFT JOIN github_findings_v15 f ON f.run=r.id WHERE p.state!='disconnected'
-      ORDER BY r.created DESC LIMIT 25`).all()).results;
-    const history=await Promise.all(runs.map(async ({sealed,...r})=>{
+      LEFT JOIN github_findings_v15 f ON f.run=r.id JOIN github_inventory_v15 i ON i.repo=p.id
+      WHERE p.state!='disconnected' AND i.installation=? AND i.availability!='removed' AND (? IS NULL OR r.repo=?)
+      ORDER BY r.created DESC LIMIT 25`).bind(installation,repository,repository).all()).results;
+  return Promise.all(runs.map(async ({sealed,...r})=>{
       if(!sealed) return r;
       try {return {...r,finding:JSON.parse(await unseal(sealed,env.RECOVERY_KEY,'github:'+r.id))};}
       catch {return {...r,state:'unavailable'};}
     }));
-    return response({configured:configured(env),repos,history});
+}
+
+export async function githubRoute({env,path,method,read,now}) {
+  if (method==='GET' && path==='/github') {
+    const current=await account(env,now);
+    const repos=(await env.DB.prepare(`SELECT p.id,p.name,p.description,p.state,p.due,p.checked,p.head,i.private,
+      CASE WHEN i.installation=? THEN i.availability ELSE 'removed' END AS availability,
+      (SELECT MAX(r.created) FROM github_runs_v15 r WHERE r.repo=p.id AND r.state IN ('finding','reviewed','duplicate')) AS analyzed
+      FROM github_inventory_v15 i JOIN github_repos_v15 p ON p.id=i.repo WHERE i.installation=? ORDER BY p.name`).bind(current?.installation??'',current?.state==='disconnected'?'':current?.installation??'').all()).results;
+    const history=current?.state!=='disconnected'&&current?await githubHistory(env,current.installation,null):[];
+    const slug=/^[a-z\d-]{1,100}$/.test(env.GITHUB_APP_SLUG??'')?env.GITHUB_APP_SLUG:null;
+    return response({configured:configured(env),repos,history,slug,account:current?
+      {state:current.state,lastSync:current.last_sync,syncError:!!current.sync_error}:null});
   }
   if (!configured(env)) return response({error:'A GitHub App ainda não está configurada no gateway.'},503);
+  const historyRoute=/^\/github\/repository\/(\d+)\/history$/.exec(path);
+  if(method==='GET' && historyRoute){
+    const current=await account(env,now);
+    return response({history:current&&current.state!=='disconnected'?await githubHistory(env,current.installation,Number(historyRoute[1])):[]});
+  }
+  if (method==='POST' && path==='/github/account') {
+    const value=await read(256);
+    if(!['active','paused','disconnected','sync'].includes(value?.action)) return response({error:'Ação inválida.'},400);
+    const state=await account(env,now);
+    if(!state) return response({error:'A instalação precisa ser validada pelo administrador.'},409);
+    if(value.action==='sync' && state.state==='disconnected')return response({error:'Reconecte a conta primeiro.'},409);
+    if(value.action==='sync') await env.DB.prepare('UPDATE github_account_v15 SET next_sync=MIN(next_sync,?) WHERE singleton=1')
+      .bind(now).run();
+    else await env.DB.batch([
+      env.DB.prepare(`UPDATE github_account_v15 SET state=?,next_sync=?,lease=NULL,page=1,generation=NULL WHERE singleton=1`)
+        .bind(value.action,now),
+      env.DB.prepare('UPDATE github_repos_v15 SET revision=revision+1,lease=NULL WHERE lease IS NOT NULL'),
+    ]);
+    return response({ok:true});
+  }
   if (method==='GET' && path==='/github/installations') return response({repos:await installationRepos(env)});
   if (method==='POST' && path==='/github/repository') {
     const value=await read(300);
     if (!safeId(value?.id)||!['active','paused','disconnected'].includes(value.state)) return response({error:'Seleção inválida.'},400);
-    if (value.state==='active') {
-      const repo=(await installationRepos(env)).find(r=>r.id===value.id);
-      if(!repo) return response({error:'Repositório fora da instalação autorizada.'},404);
-      const saved=await env.DB.prepare(`INSERT INTO github_repos_v15(id,name,description,state,due)
-        SELECT ?,?,?,'active',? WHERE (SELECT COUNT(*) FROM github_repos_v15 WHERE state='active' AND id!=?)<10
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,state='active',
-        due=excluded.due,revision=revision+1,dirty=1,lease=NULL RETURNING id`)
-        .bind(repo.id,repo.name,repo.description,now,repo.id).first();
-      return saved?response({ok:true}):response({error:'Limite de dez repositórios ativos.'},409);
-    }
-    await env.DB.prepare('UPDATE github_repos_v15 SET state=?,revision=revision+1,lease=NULL WHERE id=?').bind(value.state,value.id).run();
-    return response({ok:true});
+    const current=await account(env,now);
+    if(!current||current.state==='disconnected')return response({error:'Conecte a conta primeiro.'},409);
+    const result=await env.DB.prepare(`UPDATE github_repos_v15 SET state=?,revision=revision+1,lease=NULL,due=?
+      WHERE id=? AND EXISTS(SELECT 1 FROM github_inventory_v15 i WHERE i.repo=github_repos_v15.id
+        AND i.installation=? AND i.availability='available') RETURNING id`)
+      .bind(value.state,now,value.id,current.installation).first();
+    return result?response({ok:true}):response({error:'Repositório fora do inventário autorizado.'},404);
   }
+
   if (method==='POST' && path==='/github/finding') {
     const value=await read(280);
     if(!idPattern.test(value?.id??'')||!['dismissed','resolved'].includes(value.state)) return response({error:'Estado inválido.'},400);
@@ -160,6 +258,7 @@ async function collect(repo, token) {
   const path=repoPath(repo.name);
   const info=await github(path,token);
   if (info.id!==repo.id || !info.default_branch) throw Error('Repositório divergente');
+  if(info.archived||info.disabled)return {archived:true};
   const commit=await github(path+'/commits/'+encodeURIComponent(info.default_branch),token);
   const sha=commit.sha;
   if (!shaPattern.test(sha??'')) throw Error('Commit inválido');
@@ -220,21 +319,30 @@ export function evidence(result,files) {
 export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()}) {
   if (!configured(env)||!env.AI||!env.RECOVERY_KEY||env.DEPLOYMENT_TIER!=='workers-free-confirmed') return;
   await env.DB.prepare('DELETE FROM github_deliveries_v15 WHERE received<?').bind(now-7*dayMs).run();
-  const selected=await env.DB.prepare("SELECT * FROM github_repos_v15 WHERE state='active' AND due<=? AND (lease IS NULL OR lease_until<=?) ORDER BY due LIMIT 1")
-    .bind(now,now).first();
+  const state=await account(env,now);
+  if(state?.state!=='active')return;
+  const permission=`EXISTS (SELECT 1 FROM github_inventory_v15 i JOIN github_account_v15 a
+    ON a.installation=i.installation WHERE i.repo=github_repos_v15.id AND i.availability='available' AND a.state='active')`;
+  const selected=await env.DB.prepare(`SELECT * FROM github_repos_v15 WHERE state='active' AND ${permission}
+    AND due<=? AND (lease IS NULL OR lease_until<=?) ORDER BY due,dirty DESC,id LIMIT 1`).bind(now,now).first();
   if(!selected) return;
   const id=crypto.randomUUID();
   const repo=await env.DB.prepare(`UPDATE github_repos_v15 SET lease=?,lease_until=? WHERE id=? AND revision=?
     AND state='active' AND (lease IS NULL OR lease_until<=?) RETURNING *`)
     .bind(id,now+5*60_000,selected.id,selected.revision,now).first();
   if(!repo) return;
-  const current = "id=? AND lease=? AND revision=? AND state='active'";
+  const current = "id=? AND lease=? AND revision=? AND state='active' AND "+permission;
   const args=[repo.id,id,repo.revision];
   const complete = (sha, delay, dirty=0) => env.DB.prepare(`UPDATE github_repos_v15
     SET head=COALESCE(?,head),checked=?,due=?,dirty=? WHERE ${current}`).bind(sha,now,now+delay,dirty,...args);
   let reserved, accounted, sha, success=false;
   try {
     const data=await collect(repo,await installationToken(env,repo.id));
+    if(data.archived){
+      await env.DB.prepare("UPDATE github_inventory_v15 SET availability='archived' WHERE repo=? AND installation=?")
+        .bind(repo.id,state.installation).run();
+      return;
+    }
     sha=data.sha;
     if (!data.files.length) {
       if(sha!==repo.head || repo.dirty) await env.DB.batch([

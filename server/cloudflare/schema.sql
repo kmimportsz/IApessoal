@@ -147,3 +147,19 @@ CREATE TABLE IF NOT EXISTS github_findings_v15 (
   state TEXT NOT NULL CHECK(state IN ('new','dismissed','resolved')),
   UNIQUE(repo,fingerprint), FOREIGN KEY(run) REFERENCES github_runs_v15(id)
 );
+
+CREATE TABLE IF NOT EXISTS github_account_v15 (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  installation TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('active','paused','disconnected')),
+  next_sync INTEGER NOT NULL, page INTEGER NOT NULL DEFAULT 1, generation TEXT,
+  lease TEXT, lease_until INTEGER, last_sync INTEGER, sync_error INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS github_inventory_v15 (
+  repo INTEGER PRIMARY KEY REFERENCES github_repos_v15(id),
+  installation TEXT NOT NULL, generation TEXT NOT NULL,
+  availability TEXT NOT NULL CHECK(availability IN ('available','archived','removed')),
+  private INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS github_inventory_installation_v15 ON github_inventory_v15(installation,generation);
+CREATE INDEX IF NOT EXISTS github_repos_due_v15 ON github_repos_v15(state,due);
