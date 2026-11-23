@@ -43,7 +43,12 @@ test('A migração 1.1 preserva v1.0, recupera envio e registra metadados de rev
     assert.equal(claim.run('https://example.test', 'a').changes, 0);
     sqlite.exec("UPDATE memory SET private=1,version=2,updated=200 WHERE id='legacy'");
     assert.equal(claim.run('https://example.test', 'b').changes, 0);
-    assert.equal(sqlite.prepare('SELECT version FROM memory_history').get()?.version, 2);
+    sqlite.exec("UPDATE memory SET private=0,version=3 WHERE id='legacy'");
+    sqlite.exec("INSERT INTO memory_auto_grants VALUES ('legacy',3)");
+    sqlite.exec("INSERT INTO outbox (id,prompt,route,url,created,memory_id,memory_version,memory_auto) VALUES ('c','c','local','',125,'legacy',3,1)");
+    sqlite.exec("DELETE FROM memory_auto_grants WHERE id='legacy'");
+    assert.equal(claim.run('https://example.test', 'c').changes,0);
+    assert.equal(sqlite.prepare('SELECT version FROM memory_history ORDER BY version LIMIT 1').get()?.version, 2);
     sqlite.exec("DELETE FROM memory WHERE id='legacy'");
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM memory_history').get()?.count, 0);
   } finally { sqlite.close(); }

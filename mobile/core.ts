@@ -112,3 +112,12 @@ export function validateMemoryBackup(value: unknown): Memory[] {
     return {id:'',kind:row.kind,body:row.body.trim(),private:row.private,updated:row.updated,version:1};
   });
 }
+
+export function publicResearchTopic(text: string): string | undefined {
+  const clean=text.trim();
+  if(clean.length<6||clean.length>140||/[\n@/]|\d{5,}/.test(clean)||
+      /\b(meu|minha|meus|minhas|cpf|senha|telefone|endere[cç]o|conta|cliente|privad[oa])\b/i.test(clean)) return;
+  const explicit=clean.match(/^pesquise(?:\s+sobre)?\s+(.+)$/i)?.[1];
+  if(explicit) return explicit;
+  if(/^(?:quais|qual|cite|busque)\b/i.test(clean)&&/\b(not[ií]cias|atualiza[cç][õo]es|pre[cç]os|documenta[cç][aã]o|estudos recentes)\b/i.test(clean)) return clean;
+}

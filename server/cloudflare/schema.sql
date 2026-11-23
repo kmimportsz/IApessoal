@@ -93,3 +93,34 @@ BEGIN UPDATE tracked_projects SET active=0 WHERE id=NEW.project_id; END;
 CREATE TRIGGER IF NOT EXISTS pause_project_details_update_v14
 AFTER UPDATE OF status ON project_details_v14 WHEN NEW.status != 'active'
 BEGIN UPDATE tracked_projects SET active=0 WHERE id=NEW.project_id; END;
+
+CREATE TABLE IF NOT EXISTS project_analysis_permission_v15 (
+  project_id TEXT PRIMARY KEY REFERENCES tracked_projects(id) ON DELETE CASCADE,
+  enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+  allowed_since INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_analysis_v15 (
+  project_id TEXT NOT NULL REFERENCES tracked_projects(id) ON DELETE CASCADE,
+  cycle INTEGER NOT NULL,
+  run_id TEXT NOT NULL UNIQUE,
+  fingerprint TEXT NOT NULL,
+  day TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  sealed TEXT,
+  expires INTEGER,
+  PRIMARY KEY(project_id,cycle)
+);
+CREATE INDEX IF NOT EXISTS analysis_day_v15 ON project_analysis_v15(day);
+CREATE TABLE IF NOT EXISTS push_preferences_v15 (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  token TEXT NOT NULL,
+  start_hour INTEGER NOT NULL,
+  end_hour INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_delivery_v15 (
+  day TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  status TEXT NOT NULL
+);

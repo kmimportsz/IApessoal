@@ -1,3 +1,5 @@
+import { backupRoute } from './backup.mjs';
+import { automationRoute, runProjectAnalyses } from './automation.mjs';
 import { calculate, calculatorTool } from './calculator.mjs';
 import { searchPublic, searchLimit } from './research.mjs';
 import { identity, officialIdentity } from './persona.mjs';
@@ -16,8 +18,8 @@ const dailyNeurons = 5000;
 
 export function selectModel(prompt, env) {
   const question = prompt.split('\n\nMensagem atual:\n').at(-1).normalize('NFD').replace(/\p{M}/gu, '');
-  const complex = question.length > 460 ||
-    /\b(compare|comparar|analise|analisar|estrategia|planeje|arquitetura|demonstre|prove|raciocinio|passo a passo)\b/i.test(question);
+  const complex = question.length > 460 || /R\$.*R\$|\brealista.*\d/i.test(question) ||
+    /\b(compare|comparar|analise|analisar|estrategia|planeje|arquitetura|demonstre|prove|raciocinio|passo a passo|investir|investimento|receita|lucro|rentabilidade|risco financeiro)\b/i.test(question);
   const id = env.MODEL ?? (complex ? advanced : economical);
   return Object.hasOwn(models, id) ? {id, ...models[id]} : null;
 }
@@ -143,6 +145,17 @@ async function chat(request, env, now, day, month) {
   const official = officialIdentity(data.prompt, model);
   if (official) return json({reply: official, route: 'local', model: null,
     modelLabel: 'Configuração verificada', responseSource: 'gateway-identity'});
+  const question = data.prompt.split('\n\nMensagem atual:\n').at(-1).trim();
+  const percentage = /^quanto (?:é|e) ([0-9]+(?:[,.][0-9]+)?)\s*% de (?:R\$\s*)?([0-9.,]+)\s*\??$/iu.exec(question);
+  if (percentage) {
+    const operand=percentage[2].replace(/\.(?=\d{3}(?:\.|,|$))/g,'');
+    try {
+      const result=calculate(percentage[1]+'%*'+operand);
+      await env.DB.prepare("INSERT OR IGNORE INTO tool_audit_v14 VALUES (?,'calculator','verified',?)").bind(data.id,now.getTime()).run();
+      return json({reply:result.expression+' = '+result.decimal+(result.rounded?' (aproximado; exato '+result.exact+')':''),
+        route:'local',modelLabel:'Calculadora',responseSource:'tool'});
+    } catch {return error('A expressão de porcentagem não pôde ser validada.',400);}
+  }
   const messages = [{role: 'system', content: identity(model)}, {role: 'user', content: data.prompt}];
   const reserve = reservedNeurons(model, messages);
   const sealed = await seal(data.prompt, env.RECOVERY_KEY, 'prompt:' + data.id);
@@ -225,6 +238,11 @@ async function consume(env, body) {
   ]);
 }
 
+async function processReview(env) {
+  await reviewProjects(env.DB,Date.now());
+  await runProjectAnalyses(env,{models:[{id:economical,...models[economical]},{id:advanced,...models[advanced]}],
+    estimate:reservedNeurons,charge:neurons});
+}
 export default {
   async fetch(request, env) {
     const {pathname} = new URL(request.url);
@@ -261,6 +279,10 @@ export default {
         try {return json({...await searchPublic(query),dailyUsed:reserved.calls,dailyLimit:searchLimit});}
         catch {return error('A fonte pública não respondeu. Tente mais tarde.',502);}
       }
+      if(pathname==='/backup/projects') return backupRoute({db:env.DB,method:request.method,read:limit=>readJson(request,limit)});
+      if (pathname === '/automation' || pathname.startsWith('/automation/')) {
+        return automationRoute({env,path:pathname,method:request.method,read:limit=>readJson(request,limit),now:now.getTime()});
+      }
       if (pathname === '/initiative' || pathname.startsWith('/initiative/')) {
         return await initiativeRoute({path: pathname, method: request.method, db: env.DB,
           read: limit => readJson(request, limit), now: now.getTime(),
@@ -293,13 +315,13 @@ export default {
   },
   async queue(batch, env) {
     for (const message of batch.messages) {
-      if (message.body?.kind === 'initiative_review') await reviewProjects(env.DB,Date.now());
+      if (message.body?.kind === 'initiative_review') await processReview(env);
       else await consume(env, message.body);
       message.ack();
     }
   },
   async scheduled(_event, env) {
-    await reviewProjects(env.DB, Date.now());
+    await processReview(env);
     await env.DB.prepare('UPDATE request_recovery SET sealed_reply=NULL WHERE expires <= ? AND sealed_reply IS NOT NULL')
       .bind(Date.now()).run();
   }

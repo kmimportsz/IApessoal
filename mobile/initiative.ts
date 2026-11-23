@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
-export const trackingGateway = 'https://iapessoal-gateway-v14.km-prospect-ai-app.workers.dev';
+export const trackingGateway = 'https://iapessoal-gateway-v15.km-prospect-ai-app.workers.dev';
 export type Project = {id:string; title:string; pending:string; due:number; active:number; description?:string;objective?:string;priority?:string;status?:string;frequencyDays?:number};
 export type Initiative = Project & {cycle?:number; occurred:number; state:'new'|'read'|'dismissed'; urgency:string; origin:string; confidence:string};
 type Tracking = {enabled:boolean; projects: Project[]; initiatives: Initiative[]};

@@ -1,5 +1,7 @@
 # Inteligência Pessoal Evolutiva
 
+Veja o [guia da IA Pessoal 1.5](server/cloudflare/V1.5.md).
+
 Veja a [auditoria e o roteiro da versão 1.4](server/cloudflare/V1.4.md).
 Veja a [auditoria e o roteiro da versão 1.3](server/cloudflare/V1.3.md).
 

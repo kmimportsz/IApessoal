@@ -226,7 +226,8 @@ test('Pesquisa é uma consulta fixa e a resposta só contém links reconstruído
     assert.equal(url.searchParams.get('q'),'energia solar');
     return Response.json({pages:[{key:'Energia_solar',title:'Energia solar',url:'https://example.test',description:'<b>Fonte</b>'}]});
   });
-  assert.deepEqual(data.results,[{title:'Energia solar',url:'https://pt.wikipedia.org/wiki/Energia_solar',description:'Fonte'}]);
+  assert.deepEqual(data.results,[{title:'Energia solar',url:'https://pt.wikipedia.org/wiki/Energia_solar',description:'Fonte',date:null,source:'Wikipédia'}]);
+  assert.equal(data.providers.filter(provider=>provider.available).length,1);
 });
 
 test('Plano semanal gera um único evento por ciclo e pausa suspende novas revisões', async t => {
@@ -261,4 +262,50 @@ test('O modelo pode pedir somente a calculadora autorizada e o recibo entrega o 
   assert.match(result.reply,/2100/);
   assert.equal(db.prepare('SELECT outcome FROM tool_audit_v14 WHERE id=?').get(a.id).outcome,'verified');
   assert.equal((await call('/research',{query:'tema público'})).status,400);
+});
+
+test('Automação agenda somente projetos autorizados e faz no máximo uma inferência por evento', async t=>{
+  const {db,env,call}=setup(t);
+  const id=crypto.randomUUID(),future=Date.now()+60000;
+  await call('/initiative/permission',{enabled:true});
+  await call('/initiative/projects',{id,title:'Loja',pending:'Comparar duas propostas',due:future});
+  db.prepare('UPDATE tracked_projects SET due=? WHERE id=?').run(Date.now()-50,id);
+  await worker.scheduled({},env);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM project_analysis_v15').get().n,0);
+  await call('/automation/project',{id,enabled:true});
+  db.prepare('UPDATE initiative_events SET occurred=? WHERE project_id=?').run(Date.now()+20,id);
+  let calls=0;
+  env.AI.run=async (_,data)=>{
+    calls++;
+    assert.match(data.messages[1].content,/Comparar duas propostas/);
+    return {choices:[{message:{content:JSON.stringify({relevant:true,summary:'Compare custo total.',action:'Peça dois orçamentos.'})},finish_reason:'stop'}]};
+  };
+  await Promise.all([worker.scheduled({},env),worker.scheduled({},env)]);
+  assert.equal(calls,1);
+  const receipt=await (await call('/automation')).json();
+  assert.equal(receipt.entries[0].state,'ready');
+  assert.equal(receipt.entries[0].action,'Peça dois orçamentos.');
+  assert.doesNotMatch(db.prepare('SELECT sealed FROM project_analysis_v15').get().sealed,/orçamentos/);
+});
+
+test('Consulta financeira usa o modelo avançado e porcentagem clara é determinística', async t=>{
+  const {call,job,queued}=setup(t);
+  assert.equal(selectModel('É realista obter R$ 100 mil começando com R$ 500?',{}).label,'GPT-OSS 120B');
+  const response=await (await call('/chat',{...job(),prompt:'Quanto é 18% de R$ 3.450?'})).json();
+  assert.equal(response.modelLabel,'Calculadora');
+  assert.match(response.reply,/621/);
+  assert.equal(queued.length,0);
+});
+
+test('Backup remoto ignora projetos duplicados e nunca reativa a agenda importada', async t=>{
+  const {call,db}=setup(t);
+  const id=crypto.randomUUID(),now=Date.now();
+  const data={confirmed:true,projects:[{id,title:'Importado',pending:'Avaliar',due:now}],events:[{id,cycle:0,due:now,occurred:now,state:'new'}]};
+  assert.equal((await call('/backup/projects',{...data,confirmed:false})).status,400);
+  const first=await (await call('/backup/projects',data)).json();
+  assert.equal(first.imported,1);
+  const second=await (await call('/backup/projects',data)).json();
+  assert.equal(second.imported,0);
+  assert.equal(db.prepare('SELECT active FROM tracked_projects WHERE id=?').get(id).active,0);
+  assert.equal(db.prepare('SELECT state FROM initiative_events WHERE project_id=?').get(id).state,'read');
 });

@@ -72,3 +72,20 @@ test('Validação do backup separa dados aceitos de credenciais, IDs externos e 
   assert.throws(()=>validateMemoryBackup({version:2,memories:[]}));
   assert.throws(()=>validateMemoryBackup({version:1,memories:[{...valid,private:'yes'}]}));
 });
+
+test('Pesquisa automática extrai tema público e rejeita menções pessoais e texto misturado', async ()=>{
+  const {publicResearchTopic}=await import('./core.ts');
+  assert.equal(publicResearchTopic('Pesquise sobre energia solar'),'energia solar');
+  assert.equal(publicResearchTopic('Pesquise minha conta corrente'),undefined);
+  assert.equal(publicResearchTopic('Pesquise informações de teste@exemplo.org'),undefined);
+  assert.equal(publicResearchTopic('Bom dia, como vai?'),undefined);
+});
+
+test('Backup integrado preserva histórico e filtra opções secretas',async()=>{
+  const {validateWorkspace}=await import('./backup-format.ts');
+  const {validateMemoryBackup}=await import('./core.ts');
+  const result=validateWorkspace({version:2,threads:[{id:'principal',title:'Principal',archived:0}],messages:[],
+    cloud:null,memories:[],options:{profileName:'Nome',token:'segredo',avatarPhoto:'arquivo'}},validateMemoryBackup);
+  assert.deepEqual(result.options,{profileName:'Nome'});
+  assert.equal(result.threads[0].id,'principal');
+});

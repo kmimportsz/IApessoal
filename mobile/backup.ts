@@ -1,35 +1,54 @@
 import { AESEncryptionKey, AESSealedData, aesDecryptAsync, aesEncryptAsync, randomUUID } from 'expo-crypto';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { memoryKey, validateMemoryBackup, type Memory } from './core';
+import { exportOptions, validateWorkspace, type Backup } from './backup-format';
 
-export async function exportMemories(memories: Memory[]) {
-  validateMemoryBackup({version:1,memories});
+export async function exportWorkspace(db:SQLiteDatabase, cloud:unknown) {
+  const [memories,threads,messages,prefs]=await Promise.all([
+    db.getAllAsync('SELECT * FROM memory LIMIT 501'),
+    db.getAllAsync('SELECT id,title,archived FROM conversations LIMIT 101'),
+    db.getAllAsync(`SELECT id,thread_id,prompt,reply,created,reply_at,response_model FROM outbox LIMIT 1001`),
+    db.getAllAsync<{key:string;value:string}>('SELECT key,value FROM options'),
+  ]);
+  const options=Object.fromEntries(prefs.filter(r=>exportOptions.includes(r.key as typeof exportOptions[number])).map(r=>[r.key,r.value]));
+  const data=validateWorkspace({version:2,memories,threads,messages,options,cloud},validateMemoryBackup);
+  const bytes=new TextEncoder().encode(JSON.stringify(data));
+  if(bytes.length>1_350_000) throw Error('O backup excede 1,35 MB. Nenhum registro foi descartado.');
   const key=await AESEncryptionKey.generate(256);
-  const bytes=new TextEncoder().encode(JSON.stringify({version:1,memories}));
-  if(bytes.length>450000) throw Error('Este backup excede o limite de 450 KB.');
   const sealed=await aesEncryptAsync(bytes,key);
-  return {key:await key.encoded('hex'),payload:'IPE14:'+await sealed.combined('base64')};
+  return {key:await key.encoded('hex'),payload:'IPE15:'+await sealed.combined('base64')};
 }
-export async function readBackup(payload: string, hex: string) {
-  if(!/^IPE14:[A-Za-z0-9+/=]+$/.test(payload) || payload.length>610000 || !/^[a-f0-9]{64}$/i.test(hex)) throw Error('Backup ou chave inválidos.');
-  try {
+export async function readBackup(payload:string, hex:string):Promise<Backup> {
+  if(!/^IPE1[45]:[A-Za-z0-9+/=]+$/.test(payload)||payload.length>1_810_000||!/^[a-f0-9]{64}$/i.test(hex))
+    throw Error('Backup ou chave inválidos.');
+  try{
     const key=await AESEncryptionKey.import(hex,'hex');
     const bytes=await aesDecryptAsync(AESSealedData.fromCombined(payload.slice(6)),key);
-    return validateMemoryBackup(JSON.parse(new TextDecoder().decode(bytes)));
-  } catch {throw Error('Não foi possível autenticar ou validar o backup. Confira a chave e o conteúdo.');}
+    const parsed=JSON.parse(new TextDecoder().decode(bytes));
+    return payload.startsWith('IPE14:')?{version:2,memories:validateMemoryBackup(parsed),threads:[],messages:[],options:{},cloud:null}:
+      validateWorkspace(parsed,validateMemoryBackup);
+  }catch{throw Error('Não foi possível autenticar ou validar o backup.');}
 }
-export async function importMemories(db: SQLiteDatabase, items: Memory[]) {
-  let imported=0;
+export async function importWorkspace(db:SQLiteDatabase,data:Backup) {
+  const counts={memories:0,messages:0,threads:0};
   await db.withExclusiveTransactionAsync(async tx=>{
-    const existing=await tx.getAllAsync<{body:string}>('SELECT body FROM memory');
+    const existing=await tx.getAllAsync<Pick<Memory,'body'>>('SELECT body FROM memory');
     const keys=new Set(existing.map(row=>memoryKey(row.body)));
-    for(const row of items){
-      const key=memoryKey(row.body);
-      if(keys.has(key)) continue;
-      // Restored memories require renewed sharing approval on this device.
+    for(const row of data.memories){
+      const key=memoryKey(row.body);if(keys.has(key))continue;
       await tx.runAsync('INSERT INTO memory VALUES (?,?,?,?,?,1)',randomUUID(),row.kind,row.body,1,row.updated);
-      keys.add(key);imported++;
+      keys.add(key);counts.memories++;
     }
+    for(const row of data.threads){
+      counts.threads+=(await tx.runAsync('INSERT OR IGNORE INTO conversations(id,title,archived) VALUES (?,?,?)',row.id,row.title,row.archived)).changes;
+    }
+    for(const row of data.messages){
+      counts.messages+=(await tx.runAsync(`
+        INSERT OR IGNORE INTO outbox(id,thread_id,prompt,route,url,created,state,reply,reply_at,response_model)
+        VALUES (?,?,?,'local','',?,?,?,?,?)
+      `,row.id,row.thread_id,row.prompt,row.created,row.reply?'done':'rejected',row.reply,row.reply_at,row.response_model)).changes;
+    }
+    for(const [k,v] of Object.entries(data.options))await tx.runAsync('INSERT OR IGNORE INTO options VALUES (?,?)',k,v);
   });
-  return imported;
+  return counts;
 }
