@@ -19,6 +19,7 @@ import { categories, connectionState, eligible, endpoint, experiment, matches, m
 import { audit, initialize } from './storage';
 import { exportWorkspace, importWorkspace, readBackup } from './backup';
 import { claimJobSql } from './outbox';
+import { useAppUpdate } from './use-app-update';
 
 const voice = requireOptionalNativeModule<typeof VoiceModule>('ExpoSpeechRecognition');
 const tabs = ['Conversa', 'Projetos', 'Memórias', 'Laboratório', 'Ajustes'] as const;
@@ -166,6 +167,7 @@ function PersonalApp() {
   const [avatarPhoto, setAvatarPhoto] = useState<string>();
   const [voiceRate, setVoiceRate] = useState(1);
   const [projectEdit,setProjectEdit]=useState<Project>();
+  const storedProfile = useRef({name:'', style:''});
   const [profileName,setProfileName]=useState('');
   const [profileStyle,setProfileStyle]=useState('');
   const [profileAttached,setProfileAttached]=useState(false);
@@ -178,6 +180,9 @@ function PersonalApp() {
   const [listening, setListening] = useState(false);
   const [busy, setBusy] = useState(false);
   const networkLock = useRef(false);
+  const restarting = useRef(false);
+  const runningActions = useRef(0);
+  const update = useAppUpdate(db, connected);
   const startup = useRef<Promise<SQLiteDatabase> | null>(null);
 
   const refresh = useCallback(async (store: SQLiteDatabase) => {
@@ -197,7 +202,8 @@ function PersonalApp() {
     setThreads(conversations);
     setAutoGrants(grants);
     setResearchMode(prefs.researchMode==='auto'||prefs.researchMode==='off'||prefs.researchMode==='confirm'?prefs.researchMode:prefs.researchAllowed==='no'?'off':'confirm');
-    setProfileName(prefs.profileName ?? '');setProfileStyle(prefs.profileStyle ?? '');
+    storedProfile.current = {name:prefs.profileName ?? '', style:prefs.profileStyle ?? ''};
+    setProfileName(storedProfile.current.name);setProfileStyle(storedProfile.current.style);
     setPortrait(prefs.portrait ?? palette.blueDark);
     setAvatarChoice(avatarChoices.includes(prefs.avatarChoice as AvatarChoice) ? prefs.avatarChoice as AvatarChoice : 'Clássico');
     setAvatarPhoto(/^avatar-[a-f0-9-]+\.jpg$/i.test(prefs.avatarPhoto ?? '') ? prefs.avatarPhoto : undefined);
@@ -340,8 +346,11 @@ function PersonalApp() {
   }, [jobs, chatQuery, threadId]);
 
   async function perform(action: () => Promise<void>) {
+    if (restarting.current) return;
+    runningActions.current += 1;
     try { await action(); }
     catch (error) { setNotice(error instanceof Error ? error.message : 'A operação falhou.'); }
+    finally { runningActions.current -= 1; }
   }
 
   function confirm(title: string, detail: string, action: () => Promise<void>) {
@@ -583,7 +592,7 @@ function PersonalApp() {
   }
 
   const verifyReply = useCallback(async (job: Job, manual: boolean) => {
-    if (!db || connected === false || checkingJobs.current.has(job.id)) return;
+    if (restarting.current || !db || connected === false || checkingJobs.current.has(job.id)) return;
     if (![recoveryGateway,previousGateway,v14Gateway,trackingGateway].includes(settings.url) || ![recoveryGateway,upgradedGateway,previousGateway,v14Gateway,trackingGateway].includes(job.url) || (job.url === trackingGateway && settings.url !== trackingGateway)) {
       if (manual) setNotice('A recuperação por ID está disponível no gateway 1.2.1.');
       return;
@@ -752,6 +761,24 @@ function PersonalApp() {
     }).catch(() => setNotice('Voz indisponível no aparelho.'));
   }
 
+  function canRestart() {
+    if (AppState.currentState !== 'active' || restarting.current || runningActions.current ||
+        queueLock.current || networkLock.current || memoryLock.current || checkingJobs.current.size) {
+      setNotice('Aguarde as operações em andamento antes de atualizar.');
+      return false;
+    }
+    const hasThreadDraft = [...threadDrafts.current].some(([id, draft]) => id !== threadId && draft.trim());
+    if (prompt.trim() || hasThreadDraft || context.trim() || profileAttached || listening || speaking ||
+        keyboardOpen || url !== settings.url || token !== settings.token || projectEdit || backupText ||
+        projectTitle.trim() || projectPending.trim() || profileName !== storedProfile.current.name ||
+        profileStyle !== storedProfile.current.style ||
+        body.trim() || threadTitle.trim()) {
+      setNotice('Salve ou finalize seus rascunhos e formulários antes de atualizar.');
+      return false;
+    }
+    return true;
+  }
+
   if (!db) return <SafeAreaView style={[s.screen, s.center]}><StatusBar barStyle="light-content" />
     {notice ? <Text style={s.text}>{notice}</Text> : <ActivityIndicator color={palette.blue} />}
   </SafeAreaView>;
@@ -861,6 +888,10 @@ function PersonalApp() {
           <Icon name={tabIcons[name]} color={tab === name ? '#57A0FF' : palette.muted} size={20} />
           <Text style={tab === name ? s.tabActive : s.tabLabel}>{name}</Text>
         </Pressable>)}</View>
+      {update.enabled && tab !== 'Ajustes' && (update.available || update.pending) && !keyboardOpen &&
+        <Pressable accessibilityRole="button" onPress={() => go('Ajustes')}>
+          <Text style={s.notice}>Atualização disponível · Abrir ajustes</Text>
+        </Pressable>}
       {!!notice && <Pressable onPress={() => setNotice('')} accessibilityHint="Toque para dispensar">
         <Text style={s.notice} accessibilityLiveRegion="polite">{notice}</Text>
       </Pressable>}
@@ -1205,6 +1236,18 @@ function PersonalApp() {
       </>}
       {tab === 'Ajustes' && <>
         <Text style={s.title}>Ajustes</Text>
+        {update.enabled && <Text style={s.muted}>Atualizações · {update.channel ?? 'Canal local'} · {update.runtimeVersion?.slice(0, 12)}</Text>}
+        {update.emergencyLaunch && <Text style={s.muted}>O aplicativo iniciou com a versão de recuperação.</Text>}
+        {update.enabled && (update.available || update.pending || update.phase !== 'idle' || !!update.failure) &&
+          <View style={s.card}>
+            <Text style={s.label}>{update.pending ? 'Atualização pronta para instalar' : 'Atualização disponível'}</Text>
+            {!!update.failure && <Text style={s.muted} accessibilityLiveRegion="polite">{update.failure}</Text>}
+            <Button
+              label={update.phase === 'downloading' ? 'Baixando…' : update.phase === 'applying' ? 'Reiniciando…' :
+                update.pending ? 'Atualizar e reiniciar' : 'Baixar atualização'}
+              disabled={update.phase !== 'idle' || (!update.pending && connected === false)}
+              onPress={() => update.pending ? void update.apply(canRestart, restarting) : void update.download()} />
+          </View>}
         <View style={s.card}><Text style={s.section}>Gateway de modelos</Text>
           {[oldGateway, upgradedGateway, recoveryGateway, previousGateway, v14Gateway].includes(settings.url) && <Button label="Conectar ao gateway 1.5" primary onPress={() =>
             confirm('Usar o gateway 1.5?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',

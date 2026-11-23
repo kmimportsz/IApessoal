@@ -96,3 +96,7 @@ npx expo export --platform all
 ```
 
 A integração HTTP do gateway é exercitada de verdade com adaptadores de teste. A suíte cobre autenticação, auditoria, recusa por orçamento sob concorrência, deduplicação após reinício e desativação de chamadas pagas. Os testes TypeScript cobrem a busca, os critérios da candidata e a validação de URL. Os bundles iOS e Android verificam o empacotamento JavaScript. Os testes em dispositivos e com respostas reais de modelos dependem de builds assinadas, aparelho e host configurados.
+
+## Atualizações OTA da 1.5
+
+[Perfis de build, publicação e recuperação](mobile/OTA.md).
