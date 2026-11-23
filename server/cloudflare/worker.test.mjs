@@ -33,7 +33,7 @@ function setup(t) {
     },
     AI: {run: async (model, input) => {
       calls++;
-      assert.equal(model, '@cf/qwen/qwen3-30b-a3b-fp8');
+      assert.equal(model, '@cf/openai/gpt-oss-120b');
       assert.equal(input.messages[0].content, PERSONA);
       return {response: '<think>interno</think> Resposta de teste'};
     }},

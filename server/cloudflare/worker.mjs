@@ -1,9 +1,9 @@
-const defaultModel = '@cf/qwen/qwen3-30b-a3b-fp8';
+const defaultModel = '@cf/openai/gpt-oss-120b';
 
 const models = {
   [defaultModel]: {
-    label: 'Qwen3 30B',
-    input: messages => ({messages, max_tokens: 1024, temperature: 0.6, stream: false}),
+    label: 'GPT-OSS 120B',
+    input: messages => ({messages, max_tokens: 512, temperature: 0.6, stream: false}),
     output: result => result.response ?? result.choices?.[0]?.message?.content,
   },
 };

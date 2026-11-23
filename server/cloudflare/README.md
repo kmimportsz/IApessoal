@@ -4,7 +4,7 @@ O app já entende as rotas autenticadas `GET /status`, `GET /audit` e `POST /cha
 
 ## Arquitetura escolhida
 
-Workers Free, Workers AI com Qwen3-30B-A3B-FP8 e D1 para deduplicação e auditoria. A cota gratuita de inferência é compartilhada pela conta (10.000 Neurons/dia). Este gateway limita o uso a oito tentativas por dia UTC, conserva os envios incertos na contagem e desativa a rota paga. Se a cota de qualquer serviço gratuito for atingida, novas chamadas param. O limite monetário informado ao app continua em R$ 20, com R$ 0 autorizados para chamadas pagas neste gateway.
+Workers Free, Workers AI com GPT-OSS 120B e D1 para deduplicação e auditoria. A cota gratuita de inferência é compartilhada pela conta (10.000 Neurons/dia). Este gateway limita o uso a oito tentativas por dia UTC, conserva os envios incertos na contagem e desativa a rota paga. Se a cota de qualquer serviço gratuito for atingida, novas chamadas param. O limite monetário informado ao app continua em R$ 20, com R$ 0 autorizados para chamadas pagas neste gateway.
 
 O binding Workers AI executa a inferência sem chave de API no app. D1 persiste apenas ID, horário e estado das chamadas e o hash da credencial do proprietário. As mensagens e memórias ficam no SQLite do aparelho. O provedor recebe o texto confirmado para inferência, incluindo contexto escolhido pelo usuário. O guia não pressupõe que a política de retenção do provedor seja equivalente ao armazenamento local.
 
@@ -15,7 +15,7 @@ O binding Workers AI executa a inferência sem chave de API no app. D1 persiste 
 | Ollama ou llama.cpp no próprio host | Inferência sem tarifa de API | Máquina ligada com memória suficiente e um endpoint HTTPS alcançável pelo iPhone |
 | API cobrada por consumo | Alternativa futura sob autorização expressa | Chave no servidor, controles contratuais de cobrança e revisão do teto antes da ativação |
 
-Fontes oficiais: [Workers AI](https://developers.cloudflare.com/workers-ai/platform/pricing/), [Qwen3](https://developers.cloudflare.com/workers-ai/models/qwen3-30b-a3b-fp8/), [D1](https://developers.cloudflare.com/d1/platform/pricing/), [Groq](https://console.groq.com/docs/rate-limits), [Render](https://render.com/docs/free).
+Fontes oficiais: [Workers AI](https://developers.cloudflare.com/workers-ai/platform/pricing/), [GPT-OSS 120B](https://developers.cloudflare.com/workers-ai/models/gpt-oss-120b/), [D1](https://developers.cloudflare.com/d1/platform/pricing/), [Groq](https://console.groq.com/docs/rate-limits), [Render](https://render.com/docs/free).
 
 ## Configuração do operador
 
