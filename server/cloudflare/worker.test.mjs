@@ -316,7 +316,8 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
   Object.assign(env,{GITHUB_APP_ID:'123',GITHUB_INSTALLATION_ID:'456',
     GITHUB_PRIVATE_KEY:privateKey.export({type:'pkcs1',format:'pem'}).replace(/\n/g,'\r\n'),
     GITHUB_WEBHOOK_SECRET:'segredo de teste'});
-  const commit='a'.repeat(40), tree='b'.repeat(40);
+  let commit='a'.repeat(40);
+  const tree='b'.repeat(40);
   const list={id:12,full_name:'owner/repo',description:'Privado',private:true};
   let redirectOutsideGitHub=false;
   t.mock.method(globalThis,'fetch',async (address, options)=>{
@@ -361,7 +362,10 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
   const status=await (await call('/github')).json();
   assert.equal(status.history[0].finding.excerpt,'export const label = input.value;');
   assert.equal(status.history[0].commit_sha,commit);
-  assert.deepEqual(status.history[0].summary,{files:[{path:'src/index.js',lines:1}],failedFiles:0,discoveryCount:1});
+  assert.deepEqual(status.history[0].summary.files,[{path:'src/index.js',lines:1,role:'Implementação'}]);
+  assert.equal(status.history[0].summary.discoveryCount,1);
+  assert.equal((await (await call('/github/dashboard')).json()).files,1);
+  assert.equal((await (await call('/github/findings/0')).json()).history.length,1);
   const oldId=crypto.randomUUID();
   db.prepare("INSERT INTO github_runs_v15 VALUES (?,?,?,?,'reviewed',NULL)").run(oldId,12,commit,1);
   const history=await (await call('/github/repository/12/history')).json();
@@ -395,10 +399,13 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
   await call('/github/repository',{id:12,state:'disconnected'});
   assert.equal((await (await call('/github')).json()).history.length,0);
   await call('/github/repository',{id:12,state:'active'});
+  commit='c'.repeat(40);
   env.AI.run=async()=>({response:{finding:null}});
   await worker.scheduled({},env);
   const noFinding=(await (await call('/github/repository/12/history')).json()).history.find(run=>run.id!==oldId&&run.state==='reviewed');
-  assert.deepEqual(noFinding.summary,{files:[{path:'src/index.js',lines:1}],failedFiles:0,discoveryCount:0});
+  assert.deepEqual(noFinding.summary.files,[{path:'src/index.js',lines:1,role:'Implementação'}]);
+  assert.equal(noFinding.summary.discoveryCount,0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM github_coverage_v16').get().n,2);
 });
 
 test('Uma descoberta jamais pode citar arquivo ou linha ausente do material',async ()=>{
@@ -451,4 +458,16 @@ test('Inventário global pagina, preserva pausas e reconhece novos, arquivados e
   await syncGitHubInventory(env,Date.now());
   assert.equal((await (await call('/github')).json()).repos.length,0);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM github_inventory_v15').get().n,54);
+});
+
+test('Cobertura escolhe alterações e avança para novos arquivos no mesmo commit',async ()=>{
+  const {selectFiles,potentialFixes}=await import('./github-context.mjs');
+  const paths=['src/auth.ts','src/storage.ts','src/ui.tsx'];
+  const covered=new Map([['src/auth.ts','current']]);
+  const result=selectFiles({paths,covered,sha:'current',changed:new Set(['src/storage.ts']),previous:new Set()});
+  assert.deepEqual(result,['src/storage.ts','src/ui.tsx']);
+  const previous=[{id:'prior',commit:'old',path:'src/auth.ts',line:1,excerpt:'return old;'}];
+  assert.deepEqual(potentialFixes(previous,[{path:'src/auth.ts',lines:['return next;']}],'current'),
+    [{id:'prior',path:'src/auth.ts',line:1}]);
+  assert.deepEqual(potentialFixes(previous,[{path:'src/auth.ts',lines:['// moved','return old;']}],'current'),[]);
 });

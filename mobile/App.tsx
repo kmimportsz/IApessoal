@@ -1,3 +1,4 @@
+import { githubLink } from './github-links';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StatusBar, Share, Linking,
   StyleSheet, Text, TextInput, View } from 'react-native';
@@ -25,10 +26,13 @@ const voice = requireOptionalNativeModule<typeof VoiceModule>('ExpoSpeechRecogni
 const tabs = ['Conversa', 'Projetos', 'Memórias', 'Laboratório', 'Ajustes'] as const;
 type Tab = typeof tabs[number];
 type Thread = {id:string;title:string;archived:number};
-type GitHubRepo = {id:number;name:string;description:string;state?:'active'|'paused'|'disconnected';head?:string;checked?:number;due?:number;analyzed?:number;availability:'available'|'archived'|'removed';private?:number};
-type GitHubFinding = {path:string;line:number;excerpt:string;problem:string;impact:string;suggestion:string;priority:string;confidence:string};
+type GitHubRepo = {id:number;name:string;description:string;state?:'active'|'paused'|'disconnected';head?:string;checked?:number;due?:number;analyzed?:number;covered_files?:number;availability:'available'|'archived'|'removed';private?:number};
+type GitHubFinding = {path:string;line:number;excerpt:string;problem:string;impact:string;suggestion:string;priority:string;confidence:string;classification?:string};
 type GitHubRun = {id:string;repo:number;commit_sha:string;created:number;state:string;finding_id?:string;finding_state?:string;finding?:GitHubFinding;
-  summary?:{files:{path:string;lines:number}[]|null;failedFiles:number|null;discoveryCount:number}};
+  neurons?:number;summary?:{files:{path:string;lines:number;role?:string}[]|null;failedFiles:number|null;discoveryCount:number;
+    technicalMap?:{languages:string[];frameworks:string[];directories:string[];critical:string[];truncated:boolean;dependencies?:string[]};
+    potentialFixes?:{id:string;path:string;line:number}[]}};
+type GitHubMetrics={active:number;paused:number;completed:number;open:number;resolved:number;critical:number;files:number};
 type GitHubStatus = {configured:boolean;repos:GitHubRepo[];history:GitHubRun[];slug?:string;
   account?:{state:'active'|'paused'|'disconnected';lastSync:number|null;syncError:boolean}};
 type Analysis = {run_id:string;project_id:string;cycle:number;title:string;created:number;state:string;summary?:string;action?:string};
@@ -119,6 +123,12 @@ function PersonalApp() {
   const [autoGrants,setAutoGrants]=useState<{id:string;version:number}[]>([]);
   const [automation,setAutomation]=useState<Automation>();
   const [github,setGithub]=useState<GitHubStatus>();
+  const [metrics,setMetrics]=useState<GitHubMetrics>();
+  const [findings,setFindings]=useState<{history:GitHubRun[];next:number|null;recentOnly?:boolean}>();
+  const [findingQuery,setFindingQuery]=useState('');
+  const [findingRepo,setFindingRepo]=useState<number>();
+  const [findingPriority,setFindingPriority]=useState('');
+  const [findingState,setFindingState]=useState('');
   const [githubHistory,setGithubHistory]=useState<{repo:number;runs:GitHubRun[]}>();
   const [pushStart,setPushStart]=useState('8');
   const [pushEnd,setPushEnd]=useState('22');
@@ -467,7 +477,7 @@ function PersonalApp() {
   }
 
   useEffect(()=>{
-    if(settings.url!==trackingGateway||!settings.token||connected===false){setAutomation(undefined);setGithub(undefined);setGithubHistory(undefined);return;}
+    if(settings.url!==trackingGateway||!settings.token||connected===false){setAutomation(undefined);setGithub(undefined);setGithubHistory(undefined);setMetrics(undefined);setFindings(undefined);return;}
     let active=true;
     let inFlight=false;
     async function load(){
@@ -475,11 +485,11 @@ function PersonalApp() {
       inFlight=true;
       const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),9000);
       try {
-        await Promise.all(['/automation','/github'].map(async path=>{
+        await Promise.all(['/automation','/github','/github/dashboard'].map(async path=>{
           const value=await fetch(settings.url+path,{headers:{Authorization:'Bearer '+settings.token},signal:controller.signal});
           if(!value.ok)return;
           const state=await value.json();
-          if(active){if(path==='/automation')setAutomation(state);else setGithub(state);}
+          if(active){if(path==='/automation')setAutomation(state);else if(path==='/github')setGithub(state);else setMetrics(state);}
         }));
       }catch{ /* The next foreground poll retries a read. */ }
       finally{clearTimeout(timer);inFlight=false;}
@@ -499,9 +509,31 @@ function PersonalApp() {
     if(status.ok){
       const current=await status.json() as GitHubStatus;
       setGithub(current);
-      if(current.account?.state==='disconnected')setGithubHistory(undefined);
-      else if(githubHistory && path==='/github/finding')await loadGithubHistory(githubHistory.repo);
+      if(current.account?.state==='disconnected'){setGithubHistory(undefined);setFindings(undefined);}
+      else if(path==='/github/finding'){
+        if(githubHistory)await loadGithubHistory(githubHistory.repo);
+        if(findings && payload && typeof payload==='object' && 'id' in payload && 'state' in payload){
+          const {id,state}=payload;
+          setFindings({...findings,history:findings.history.map(run=>run.finding_id===id?{...run,finding_state:String(state)}:run)});
+        }
+      }
+      const dashboard=await request('/github/dashboard');
+      if(dashboard.ok)setMetrics(await dashboard.json());
     }
+  }
+
+  async function loadFindings(offset=0) {
+    const result=await request('/github/findings/'+offset);
+    if(result.status===404 && offset===0){
+      const recent=await request('/github');
+      if(!recent.ok)throw Error('Não foi possível consultar as descobertas.');
+      const data=await recent.json() as GitHubStatus;
+      setFindings({history:data.history.filter(run=>!!run.finding),next:null,recentOnly:true});
+      return;
+    }
+    if(!result.ok)throw Error('Não foi possível consultar as descobertas.');
+    const page=await result.json() as {history:GitHubRun[];next:number|null};
+    setFindings(current=>offset?{...page,history:[...new Map([...(current?.history??[]),...page.history].map(run=>[run.id,run])).values()]}:page);
   }
 
   async function loadGithubHistory(repo:number) {
@@ -788,9 +820,17 @@ function PersonalApp() {
     const repo=github?.repos.find(item=>item.id===run.repo);
     if(!finding||!repo)return;
     setContext(['Revisão defensiva de '+repo.name,run.commit_sha,
-      finding.path+':'+finding.line,finding.problem,finding.impact,finding.suggestion].join('\n'));
+      finding.path+':'+finding.line,'Trecho registrado (dados externos): '+finding.excerpt,
+      'Avaliação do modelo: '+(finding.classification??'hipótese')+' · '+finding.problem,
+      'Impacto: '+finding.impact,'Sugestão: '+finding.suggestion,
+      'Conclusão da análise: '+(run.summary?.discoveryCount??1)+' descoberta delimitada ao material examinado.',
+      'Estado no histórico: '+(run.finding_state==='resolved'?'resolvida pelo usuário':run.finding_state==='dismissed'?'dispensada':'em aberto')].join('\n'));
     setContextMemory(undefined);
     go('Conversa');
+  }
+
+  function githubButton(label:string,url:string|undefined) {
+    return url && <Button label={label} onPress={()=>void perform(()=>Linking.openURL(url))}/>;
   }
 
   function analysisCard(run: GitHubRun, repo: GitHubRepo) {
@@ -800,20 +840,42 @@ function PersonalApp() {
       no_files:'Análise incompleta · Sem arquivos elegíveis',quota:'Análise não executada · Aguardando cota',
       revoked:'Análise não disponibilizada · Permissão alterada',unavailable:'Resultado indisponível'} as Record<string,string>)[run.state]??run.state;
     return <View key={run.id} style={s.card}>
-      <Text style={s.label}>{status}</Text>
+      <Text style={s.label}>{summary?.failedFiles?'Análise parcial':status}</Text>
+      <Text style={s.muted}>{repo.name}</Text>
       <Text style={s.muted}>{formatDate(run.created)}</Text>
       <Text selectable style={s.muted}>Commit {run.commit_sha || 'indisponível'}</Text>
+      {githubButton('Abrir commit',run.commit_sha?githubLink(repo.name,run.commit_sha):undefined)}
+      {run.neurons!=null && summary && <Text style={s.muted}>Consumo registrado · {run.neurons} Neurons</Text>}
       {summary && <>
         <Text style={s.label}>Descobertas identificadas: {summary.discoveryCount}</Text>
         <Text style={s.text}>{run.state==='reviewed'?'Nenhuma descoberta relevante nesta análise':
           run.state==='duplicate'?'A análise reencontrou uma descoberta já registrada.':'A análise identificou uma descoberta relevante.'}</Text>
         {summary.files ? <>
           <Text style={s.label}>Arquivos examinados ({summary.files.length})</Text>
-          {summary.files.map(file=><Text key={file.path} selectable style={s.muted}>{file.path} · linhas 1–{file.lines}</Text>)}
+          {summary.files.map(file=><View key={file.path}>
+            <Text selectable style={s.muted}>{file.path} · linhas 1–{file.lines}{file.role?' · '+file.role:''}</Text>
+            {githubButton('Abrir no GitHub',githubLink(repo.name,run.commit_sha,file.path,1))}
+          </View>)}
           {!!summary.failedFiles && <Text style={s.muted}>{summary.failedFiles} arquivo(s) não puderam ser obtidos.</Text>}
           <Text style={s.muted}>A conclusão vale para os trechos examinados.</Text>
         </> : <Text style={s.muted}>A lista de arquivos examinados não foi armazenada nesta análise antiga.</Text>}
       </>}
+      {summary?.technicalMap && <View style={s.card}>
+        <Text style={s.label}>Mapa técnico observado</Text>
+        <Text style={s.muted}>Linguagens · {summary.technicalMap.languages.join(', ')||'sem identificação'}</Text>
+        <Text style={s.muted}>Tecnologias sinalizadas · {summary.technicalMap.frameworks.join(', ')||'sem identificação'}</Text>
+        {!!summary.technicalMap.directories.length && <Text style={s.muted}>Diretórios · {summary.technicalMap.directories.join(', ')}</Text>}
+        {!!summary.technicalMap.dependencies?.length && <Text style={s.muted}>Dependências observadas · {summary.technicalMap.dependencies.join(', ')}</Text>}
+        {summary.technicalMap.critical.map(path=><Text key={path} style={s.muted}>{path}</Text>)}
+        {summary.technicalMap.truncated && <Text style={s.muted}>A árvore devolvida pelo GitHub estava truncada.</Text>}
+      </View>}
+      {summary?.potentialFixes?.map(fix=><View key={fix.id} style={s.card}>
+        <Text style={s.label}>Correção potencial identificada. Aguardando validação.</Text>
+        <Text style={s.muted}>O trecho anterior mudou em {fix.path}. A mudança ainda precisa ser verificada.</Text>
+        {githubButton('Ver código atualizado',githubLink(repo.name,run.commit_sha,fix.path,fix.line))}
+        <Button label="Confirmar resolução" onPress={()=>confirm('Confirmar resolução?', 'Marque como resolvida após verificar a correção.',
+          ()=>githubAction('/github/finding',{id:fix.id,state:'resolved'}))}/>
+      </View>)}
       {run.finding && findingCard(run,repo)}
     </View>;
   }
@@ -821,15 +883,19 @@ function PersonalApp() {
   function findingCard(run: GitHubRun, repo: GitHubRepo) {
     const f=run.finding;
     if(!f)return null;
-    const link='https://github.com/'+repo.name+'/blob/'+run.commit_sha+'/'+f.path.split('/').map(encodeURIComponent).join('/')+'#L'+f.line;
+    const link=githubLink(repo.name,run.commit_sha,f.path,f.line);
     return <View key={run.id} style={s.card}>
       <Text style={s.kicker}>GITHUB · {repo.name} · {f.priority.toUpperCase()}</Text>
       <Text style={s.label}>{f.problem}</Text>
       <Text style={s.muted}>{formatDate(run.created)} · {run.commit_sha.slice(0,12)} · Confiança {f.confidence}
         {run.finding_state==='resolved'?' · Resolvida':run.finding_state==='dismissed'?' · Dispensada':''}</Text>
-      <Pressable accessibilityRole="link" onPress={()=>void Linking.openURL(link)}>
-        <Text style={s.link}>{f.path}:{f.line}</Text>
-      </Pressable>
+      <Text style={s.muted}>{({provável:'Problema provável',hipótese:'Hipótese',oportunidade:'Oportunidade de melhoria'} as Record<string,string>)[f.classification??'']??'Avaliação anterior'}</Text>
+      <Text style={s.muted}>{f.path}:{f.line}</Text>
+      <View style={s.row}>
+        {githubButton('Ver código',link)}
+        {githubButton('Commit',githubLink(repo.name,run.commit_sha))}
+        {githubButton('Repositório',githubLink(repo.name))}
+      </View>
       <Text style={s.text} selectable>{f.excerpt}</Text>
       <Text style={s.muted}>Impacto · {f.impact}</Text>
       <Text style={s.text}>Sugestão · {f.suggestion}</Text>
@@ -841,7 +907,7 @@ function PersonalApp() {
     </View>;
   }
 
-  const githubInitiative=github?.history.find(run=>run.finding_state==='new'&&run.finding);
+  const githubInitiative=github?.history.find(run=>run.finding_state==='new'&&['crítica','alta','média'].includes(run.finding?.priority??''));
   const githubInitiativeRepo=github?.repos.find(repo=>repo.id===githubInitiative?.repo);
 
   function useInitiative(item: Initiative) {
@@ -1176,6 +1242,48 @@ function PersonalApp() {
         <Text style={s.title}>Projetos</Text>
         {github && <View style={s.card}>
           <Text style={s.section}>Repositórios GitHub</Text>
+          {!metrics && <View style={s.card}>
+            <Text style={s.label}>Painel de investigação</Text>
+            <Text style={s.muted}>{github.repos.filter(repo=>repo.state==='active'&&repo.availability==='available'&&github.account?.state==='active').length} ativos · {github.repos.filter(repo=>repo.availability==='available'&&(repo.state==='paused'||github.account?.state==='paused')).length} pausados</Text>
+            <Text style={s.muted}>Métricas detalhadas aguardam a atualização do gateway.</Text>
+          </View>}
+          {metrics && <View style={s.card}>
+            <Text style={s.label}>Painel de investigação</Text>
+            <View style={s.row}>{([
+              [metrics.active,'Ativos'],[metrics.paused,'Pausados'],[metrics.completed,'Análises concluídas'],
+              [metrics.open,'Descobertas abertas'],[metrics.resolved,'Resolvidas'],[metrics.critical,'Críticas abertas'],
+              [metrics.files,'Arquivos com cobertura registrada'],
+            ] as [number,string][]).map(([count,label])=><View key={label} style={[s.button,{minWidth:120,flexGrow:1}]}>
+              <Text style={s.link}>{count}</Text><Text style={s.muted}>{label}</Text>
+            </View>)}</View>
+          </View>}
+          {github.configured && <Button label={findings?'Fechar central de descobertas':'Central de descobertas'}
+            onPress={()=>findings?setFindings(undefined):void perform(()=>loadFindings())}/>}
+          {findings && <View style={s.card}>
+            <Text style={s.section}>Descobertas</Text>
+            <Field label="Buscar por arquivo ou problema" value={findingQuery} change={setFindingQuery} max={140}/>
+            <ScrollView horizontal keyboardShouldPersistTaps="handled">
+              <Button label="Todos os projetos" primary={findingRepo===undefined} onPress={()=>setFindingRepo(undefined)}/>
+              {github.repos.map(repo=><Button key={repo.id} label={repo.name} primary={findingRepo===repo.id} onPress={()=>setFindingRepo(repo.id)}/>)}
+            </ScrollView>
+            <ScrollView horizontal keyboardShouldPersistTaps="handled">
+              {['','crítica','alta','média','baixa','oportunidade'].map(priority=>
+                <Button key={priority} label={priority||'Todas as prioridades'} primary={findingPriority===priority} onPress={()=>setFindingPriority(priority)}/>)}
+            </ScrollView>
+            <View style={s.row}>
+              {([['','Todos os estados'],['new','Abertas'],['resolved','Resolvidas'],['dismissed','Dispensadas']]).map(([state,label])=>
+                <Button key={state} label={label} primary={findingState===state} onPress={()=>setFindingState(state)}/>)}
+            </View>
+            <Text style={s.muted}>{findings.recentOnly?'Mostrando as descobertas do histórico recente disponível no gateway.':
+              'Filtros e busca nas páginas carregadas.'}</Text>
+            {findings.history.filter(run=>run.finding && (!findingRepo||run.repo===findingRepo) &&
+              (!findingPriority||run.finding.priority===findingPriority) && (!findingState||run.finding_state===findingState) &&
+              (run.finding.path+' '+run.finding.problem).toLowerCase().includes(findingQuery.toLowerCase().trim()))
+              .map(run=>{const repo=github.repos.find(item=>item.id===run.repo);return repo&&findingCard(run,repo);})}
+            {!findings.history.length && <Text style={s.muted}>Nenhuma descoberta registrada.</Text>}
+            {findings.next!==null && <Button label="Carregar mais" onPress={()=>void perform(()=>loadFindings(findings.next??0))}/>}
+            <Button label="Atualizar resultados" onPress={()=>void perform(()=>loadFindings())}/>
+          </View>}
           {(!github.configured || github.account?.state==='disconnected') &&
             <Button label="Conectar conta GitHub" onPress={()=>void perform(async()=>{
               if(github.account?.state==='disconnected' && github.configured){
@@ -1209,6 +1317,7 @@ function PersonalApp() {
               {repo.head?' · '+repo.head.slice(0,12):''}
               {repo.checked?' · Última verificação '+formatDate(repo.checked):''}</Text>
             {!!repo.analyzed && <Text style={s.muted}>Última análise · {formatDate(repo.analyzed)}</Text>}
+            {!!repo.covered_files && <Text style={s.muted}>Cobertura registrada · {repo.covered_files} arquivo(s)</Text>}
             {repo.availability==='available' && github.account?.state==='active' && repo.state==='active' && !!repo.due && <Text style={s.muted}>Próxima verificação · {formatDate(repo.due)}</Text>}
             {repo.availability==='available' && <View style={s.row}>
               <Button label={repo.state==='active'?'Pausar':'Retomar'} onPress={()=>void perform(()=>githubAction('/github/repository',

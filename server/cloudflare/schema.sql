@@ -163,3 +163,17 @@ CREATE TABLE IF NOT EXISTS github_inventory_v15 (
 );
 CREATE INDEX IF NOT EXISTS github_inventory_installation_v15 ON github_inventory_v15(installation,generation);
 CREATE INDEX IF NOT EXISTS github_repos_due_v15 ON github_repos_v15(state,due);
+
+CREATE TABLE IF NOT EXISTS github_coverage_v16 (
+  repo INTEGER NOT NULL REFERENCES github_repos_v15(id),
+  commit_sha TEXT NOT NULL,
+  path TEXT NOT NULL,
+  run TEXT NOT NULL REFERENCES github_runs_v15(id),
+  lines INTEGER NOT NULL,
+  PRIMARY KEY(repo,commit_sha,path)
+);
+CREATE INDEX IF NOT EXISTS github_coverage_v16_path ON github_coverage_v16(repo,path);
+CREATE TABLE IF NOT EXISTS github_finding_priority_v16 (
+  finding TEXT PRIMARY KEY REFERENCES github_findings_v15(id),
+  priority TEXT NOT NULL CHECK(priority IN ('crítica','alta','média','baixa','oportunidade'))
+);
