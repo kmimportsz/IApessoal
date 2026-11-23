@@ -40,6 +40,8 @@ Base funcional 1.0 de uso individual. O nome da personagem fica em aberto. A per
 
 ## Gateway
 
+Consulte o [guia do gateway HTTPS gratuito](server/cloudflare/README.md) para usar Workers AI e D1 com o aplicativo 1.1.
+
 Python 3.12+, SQLite e dados de fuso horário do sistema. Para teste local:
 
 ```sh

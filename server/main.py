@@ -50,10 +50,16 @@ class Gateway:
         self.owner = self.config.get("OWNER_TOKEN", "")
         self.key = self.config.get("OPENAI_API_KEY", "")
         self.paid = self.config.get("ENABLE_PAID") == "yes" and bool(self.key)
+        self.local_backend = self.config.get("LOCAL_BACKEND", "ollama")
+        if self.local_backend not in ("ollama", "llama.cpp"):
+            raise ValueError("LOCAL_BACKEND deve ser ollama ou llama.cpp.")
         self.ollama = self.config.get("OLLAMA_URL", "")
+        if self.local_backend == "llama.cpp":
+            self.ollama = self.config.get("LLAMA_CPP_URL", "")
         self.ollama_model = self.config.get("OLLAMA_MODEL", "qwen2.5:3b")
-        if self.ollama not in ("", "http://127.0.0.1:11434"):
-            raise ValueError("OLLAMA_URL deve apontar ao Ollama local.")
+        loopback = "http://127.0.0.1:11434" if self.local_backend == "ollama" else "http://127.0.0.1:18111"
+        if self.ollama not in ("", loopback):
+            raise ValueError(f"O servidor de inferência deve estar em {loopback}.")
         if self.cap < 0 or (self.paid and self.reserve <= 0):
             raise ValueError("Configure limites de cobrança válidos.")
         with closing(self.connect()) as db, db:
@@ -121,6 +127,12 @@ class Gateway:
                     counts = (reported.get("prompt_tokens"), reported.get("completion_tokens"))
                     if all(type(count) is int and 0 <= count <= 2_000_000 for count in counts):
                         tokens = counts
+                reply = result["choices"][0]["message"]["content"]
+            elif self.local_backend == "llama.cpp":
+                result = self.provider(self.ollama + "/v1/chat/completions",
+                                       {"model": self.ollama_model, "messages": messages,
+                                        "max_tokens": 250, "stream": False,
+                                        "chat_template_kwargs": {"enable_thinking": False}})
                 reply = result["choices"][0]["message"]["content"]
             else:
                 result = self.provider(self.ollama + "/api/chat", {"model": self.ollama_model,
