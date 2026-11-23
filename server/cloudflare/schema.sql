@@ -25,3 +25,15 @@ CREATE TABLE IF NOT EXISTS ai_calls_v12 (
 );
 CREATE INDEX IF NOT EXISTS ai_calls_v12_day ON ai_calls_v12(day);
 CREATE INDEX IF NOT EXISTS ai_calls_v12_recent ON ai_calls_v12(created DESC);
+
+CREATE TABLE IF NOT EXISTS request_recovery (
+    id TEXT PRIMARY KEY NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('processing','finished','failed','unknown')),
+    started INTEGER NOT NULL,
+    ended INTEGER,
+    code TEXT,
+    provider_code TEXT,
+    sealed_reply TEXT,
+    expires INTEGER
+);
+CREATE INDEX IF NOT EXISTS recovery_expiry ON request_recovery(expires) WHERE sealed_reply IS NOT NULL;

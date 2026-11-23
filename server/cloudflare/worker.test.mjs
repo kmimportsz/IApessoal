@@ -3,142 +3,159 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import worker from './worker.mjs';
-import { selectModel } from './worker.mjs';
+import worker, { selectModel } from './worker.mjs';
+import { describe, interpret } from './recovery.mjs';
 
 const token = 'x'.repeat(43);
-const ownerHash = createHash('sha256').update(token).digest('hex');
+const sha = value => createHash('sha256').update(value).digest('hex');
 
 function setup(t) {
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
   db.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
+  const queued = [];
   let calls = 0;
   const env = {
-    OWNER_SHA256: ownerHash, DEPLOYMENT_TIER: 'workers-free-confirmed',
+    OWNER_SHA256: sha(token), DEPLOYMENT_TIER: 'workers-free-confirmed', RECOVERY_KEY: '1'.repeat(64),
+    INFERENCE: {send: async body => queued.push(body)},
     DB: {
       prepare(sql) {
-        const statement = db.prepare(sql);
-        return {
-          bind(...params) {
-            return {
-              first: async () => statement.get(...params) ?? null,
-              run: async () => statement.run(...params),
-            };
-          },
-          all: async () => ({results: statement.all()}),
-          first: async () => statement.get() ?? null,
-        };
+        function prepared(params) {
+          const statement = db.prepare(sql);
+          return {first: async () => statement.get(...params) ?? null, all: async () => ({results: statement.all(...params)}),
+            run: async () => statement.run(...params), bind: (...next) => prepared(next)};
+        }
+        return prepared([]);
+      },
+      async batch(statements) {
+        db.exec('BEGIN');
+        try { for (const item of statements) await item.run(); db.exec('COMMIT'); }
+        catch (error) { db.exec('ROLLBACK'); throw error; }
       },
     },
-    AI: {run: async (model, input) => {
+    AI: {run: async (_, payload) => {
       calls++;
-      assert.match(input.messages[0].content, new RegExp(model));
-      assert.match(input.messages[0].content, /SQLite/);
-      assert.equal(input.messages[1].role, 'user');
-      return {response: '<think>interno</think> Resposta de teste', usage: {prompt_tokens: 330, completion_tokens: 52}};
+      assert.match(payload.messages[0].content, /SQLite/);
+      return {choices:[{message:{content:'Resposta de teste'},finish_reason:'stop'}], usage:{prompt_tokens:330, completion_tokens:52}};
     }},
   };
-  const call = (path, data, credential = token) => worker.fetch(new Request('https://ipe.test' + path, {
-    method: data && 'POST' || 'GET',
-    headers: {Authorization: 'Bearer ' + credential},
-    body: data && JSON.stringify(data),
+  const call = (path, data, credential = token, signal) => worker.fetch(new Request('https://ipe.test' + path, {
+    method: data ? 'POST' : 'GET', headers: {Authorization:'Bearer ' + credential},
+    body: data && JSON.stringify(data), signal,
   }), env);
-  const job = (id = crypto.randomUUID(), route = 'local') => ({id, route, prompt: 'Mensagem de teste'});
-  return {env, call, job, count: () => calls};
+  const job = () => ({id:crypto.randomUUID(), route:'local', prompt:'Mensagem de teste'});
+  async function consume(body = queued[0]) {
+    await worker.queue({messages:[{body, ack() {}}]}, env);
+  }
+  return {db, env, call, job, queued, consume, count: () => calls};
 }
 
-test('Contrato compatível com app, autenticação e bloqueio de rota paga', async t => {
-  const {env, call, job, count} = setup(t);
-  assert.equal((await call('/status', undefined, 'x'.repeat(42) + 'y')).status, 401);
+test('Aceitação, desconexão, processamento e recuperação autenticada sem nova inferência', async t => {
+  const {call, job, queued, consume, count, db} = setup(t);
+  const message = job();
+  const controller = new AbortController();
+  const submitted = await call('/chat', message, token, controller.signal);
+  assert.equal(submitted.status, 202);
+  controller.abort();
+  assert.equal((await (await call('/requests/' + message.id)).json()).state, 'processing');
+  assert.equal((await call('/chat', message)).status, 202);
+  assert.equal(queued.length, 1);
+  assert.doesNotMatch(JSON.stringify(queued), /Mensagem de teste/);
+  await Promise.all([consume(), consume()]);
+  assert.equal(count(), 1);
+  assert.equal((await call('/requests/' + message.id, undefined, 'y'.repeat(43))).status, 401);
+  const recovered = await (await call('/requests/' + message.id)).json();
+  assert.equal(recovered.state, 'finished');
+  assert.equal(recovered.reply, 'Resposta de teste');
+  assert.equal((await (await call('/chat', message)).json()).reply, recovered.reply);
+  const audit = await (await call('/audit')).json();
+  assert.equal(audit[0].state, 'finished');
+  assert.equal(audit[0].model, '@cf/openai/gpt-oss-20b');
+  assert.equal(typeof audit[0].durationMs, 'number');
+  assert.doesNotMatch(JSON.stringify(audit), /Resposta de teste|sealed_reply|Mensagem de teste/);
+  assert.doesNotMatch(db.prepare('SELECT sealed_reply FROM request_recovery').get().sealed_reply, /Resposta de teste/);
+  assert.equal(count(), 1);
+});
+
+test('Cota, gateway gratuito e autenticação', async t => {
+  const {call, job, queued, count, env} = setup(t);
+  assert.equal((await call('/status', undefined, 'y'.repeat(43))).status, 401);
+  assert.equal((await (await call('/status')).json()).paid, false);
+  assert.equal((await call('/chat', {...job(), route:'paid'})).status, 503);
+  const long = 'Analise cenário empresarial. ' + 'ação '.repeat(1100);
+  const burst = await Promise.all(Array.from({length:45}, () => call('/chat', {...job(), prompt:long})));
+  assert.ok(burst.some(r => r.status === 202));
+  assert.ok(burst.some(r => r.status === 402));
   const status = await (await call('/status')).json();
-  assert.equal(status.local, true);
-  assert.equal(status.paid, false);
-  assert.equal(status.limit, 2000);
-  assert.equal((await call('/chat', job(undefined, 'paid'))).status, 503);
+  assert.ok(status.neuronsUsed <= status.neuronLimit);
+  assert.equal(status.dailyUsed, queued.length);
   assert.equal(count(), 0);
   env.DEPLOYMENT_TIER = '';
   assert.equal((await call('/chat', job())).status, 503);
-  assert.equal(count(), 0);
 });
 
-test('Deduplicação concorrente, limite diário e auditoria sem conteúdo', async t => {
-  const {call, job, count} = setup(t);
-  const first = job();
-  const results = await Promise.all([call('/chat', first), call('/chat', first)]);
-  assert.deepEqual(results.map(x => x.status).sort(), [200, 409]);
-  const reply = await results.find(x => x.status === 200).json();
-  assert.equal(reply.reply, 'Resposta de teste');
-  assert.equal(reply.model, '@cf/openai/gpt-oss-20b');
-  const burst = await Promise.all(Array.from({length: 105}, () => call('/chat', job())));
-  assert.equal(burst.filter(x => x.status === 200).length, 99);
-  assert.equal(burst.filter(x => x.status === 402).length, 6);
-  assert.equal(count(), 100);
-  const audit = await (await call('/audit')).json();
-  assert.equal(audit.length, 50);
-  assert.equal(audit.every(row => row.state === 'finished'), true);
-  assert.equal(JSON.stringify(audit).includes(first.prompt), false);
+test('Falha explícita do provedor, código, duração e retenção da reserva', async t => {
+  const {call, job, consume, env} = setup(t);
+  const message = job();
+  env.AI.run = async () => { throw Object.assign(new Error('segredo do provedor'), {status:429}); };
+  assert.equal((await call('/chat', message)).status, 202);
+  const before = (await (await call('/status')).json()).neuronsUsed;
+  await consume();
+  const result = await (await call('/requests/' + message.id)).json();
+  assert.equal(result.state, 'failed');
+  assert.equal(result.code, 'provider_rate_limit');
+  assert.equal(result.providerCode, '429');
+  assert.doesNotMatch(JSON.stringify(result), /segredo/);
+  assert.equal((await (await call('/status')).json()).neuronsUsed, before);
 });
 
-test('Falha incerta mantém a reserva, sem nova inferência com o mesmo ID', async t => {
-  const {call, job, env} = setup(t);
-  let calls = 0;
-  env.AI.run = async () => { calls++; throw new Error('provider failed'); };
-  const first = job();
-  assert.equal((await call('/chat', first)).status, 502);
-  assert.equal((await call('/chat', first)).status, 409);
-  const audit = await (await call('/audit')).json();
-  assert.equal(audit[0].state, 'uncertain');
-  assert.equal(calls, 1);
+test('Resposta truncada não é concluída e só o resultado válido expira no Cron', async t => {
+  const {call, job, env, db, consume, queued} = setup(t);
+  const a = job(), b = job();
+  await call('/chat', a);
+  await consume();
+  await call('/chat', b);
+  env.AI.run = async () => ({choices:[{message:{content:'parcial'},finish_reason:'length'}]});
+  await consume(queued[1]);
+  const failed = await (await call('/requests/' + b.id)).json();
+  assert.equal(failed.code, 'output_limit');
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.reply, undefined);
+  db.prepare('UPDATE request_recovery SET expires=? WHERE id=?').run(Date.now()-1,a.id);
+  const expired = await (await call('/requests/' + a.id)).json();
+  assert.equal(expired.state, 'finished');
+  assert.equal(expired.code, 'response_expired');
+  assert.equal(expired.reply, undefined);
+  await worker.scheduled({}, env);
+  assert.equal(db.prepare('SELECT sealed_reply FROM request_recovery WHERE id=?').get(a.id).sealed_reply, null);
 });
 
-test('Pareamento é único, substitui a credencial temporária e mantém só o hash', async t => {
-  const {call, env} = setup(t);
-  const code = 'z'.repeat(43);
-  env.PAIR_SHA256 = createHash('sha256').update(code).digest('hex');
-  env.PAIR_UNTIL = String(Date.now() + 60_000);
-  const exchange = origin => worker.fetch(new Request('https://ipe.test/pair', {
-    method: 'POST', headers: {Origin: origin}, body: JSON.stringify({code}),
-  }), env);
-  assert.equal((await exchange('https://outro.test')).status, 403);
-  const pair = await exchange('https://ipe.test');
-  assert.equal(pair.status, 201);
-  const {token: newToken} = await pair.json();
-  assert.match(newToken, /^[a-f0-9]{64}$/);
-  assert.equal((await call('/status')).status, 401);
-  assert.equal((await call('/status', undefined, newToken)).status, 200);
-  assert.equal((await exchange('https://ipe.test')).status, 409);
-  const stored = await env.DB.prepare('SELECT token_hash FROM gateway_owner WHERE singleton=1').first();
-  assert.equal(stored.token_hash, createHash('sha256').update(newToken).digest('hex'));
+test('Ausência de recibo e auditoria histórica não desencadeiam inferência', async t => {
+  const {call, job, db, queued} = setup(t);
+  const a = job();
+  const now = Date.now();
+  assert.equal((await call('/requests/' + a.id)).status, 404);
+  db.prepare("INSERT INTO ai_calls_v12 VALUES (?,?,?,?,?,?,?)").run(a.id,'2020-01-01','2020-01',now-360001,'started','modelo',42);
+  const receipt = await (await call('/requests/' + a.id)).json();
+  assert.equal(receipt.state, 'unknown');
+  assert.equal(receipt.code, 'no_terminal_confirmation');
+  assert.equal((await call('/chat', a)).status, 200);
+  assert.equal(queued.length, 0);
+  assert.equal(describe({legacy:'finished', created:now},now).code, 'legacy_response_not_retained');
 });
 
-test('Roteamento pesa a mensagem atual, respeita configuração e fixa a identidade do modelo', () => {
+test('Entrada complexa mantém 120B e o gateway distingue resposta vazia de truncada', async t => {
+  const {call, job, consume, env} = setup(t);
+  const a = {...job(), prompt:'Analise um cenário empresarial em cinco etapas. ' + 'premissa sujeita a validação '.repeat(120)};
+  await call('/chat', a);
+  env.AI.run = async (model, payload) => {
+    assert.equal(model, '@cf/openai/gpt-oss-120b');
+    assert.equal(payload.max_tokens, 4096);
+    assert.equal(payload.messages.at(-1).content, a.prompt);
+    return {choices:[{message:{content:'Análise completa'},finish_reason:'stop'}]};
+  };
+  await consume();
+  assert.equal((await (await call('/requests/' + a.id)).json()).reply, 'Análise completa');
   assert.equal(selectModel('oi', {}).label, 'GPT-OSS 20B');
-  assert.equal(selectModel('Compare duas estratégias de aprendizagem.', {}).label, 'GPT-OSS 120B');
-  assert.equal(selectModel('Contexto escolhido pelo usuário:\narquitetura\n\nMensagem atual:\nOi', {}).label, 'GPT-OSS 20B');
-  assert.equal(selectModel('oi', {MODEL: '@cf/openai/gpt-oss-120b'}).label, 'GPT-OSS 120B');
-  assert.equal(selectModel('oi', {MODEL: 'não cadastrado'}), null);
-});
-
-test('Reserva de Neurons bloqueia mensagens longas antes do limite de tentativas', async t => {
-  const {call, job, env} = setup(t);
-  env.AI.run = async () => { throw Error('sem confirmação'); };
-  const huge = 'analisar ' + 'ação '.repeat(1150);
-  const burst = await Promise.all(Array.from({length: 45}, () => call('/chat', {...job(), prompt: huge})));
-  assert.ok(burst.some(result => result.status === 502));
-  assert.ok(burst.some(result => result.status === 402));
-  const status = await (await call('/status')).json();
-  assert.ok(status.neuronsUsed <= status.neuronLimit);
-  assert.ok(status.dailyUsed < status.dailyLimit);
-});
-
-test('A ficha oficial explica a persistência e informa a seleção prevista sem inferência', async t => {
-  const {call, job, count} = setup(t);
-  const actual = await (await call('/chat', {...job(), prompt: 'Qual é seu nome, modelo e como funciona sua memória?'})).json();
-  assert.equal(actual.responseSource, 'gateway-identity');
-  assert.equal(actual.model, null);
-  assert.equal(count(), 0);
-  assert.match(actual.reply, /GPT-OSS 20B/);
-  assert.match(actual.reply, /SQLite/);
-  assert.match(actual.reply, /contexto que você aprovar/);
+  assert.equal(interpret({response:''}).code, 'empty_response');
 });

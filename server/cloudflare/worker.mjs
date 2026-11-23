@@ -1,11 +1,12 @@
 import { identity, officialIdentity } from './persona.mjs';
 import { setupPage } from './setup.mjs';
+import { describe, idPattern, interpret, providerFailure, readReceipt, replyTtl, seal, unseal } from './recovery.mjs';
 
 const economical = '@cf/openai/gpt-oss-20b';
 const advanced = '@cf/openai/gpt-oss-120b';
 const models = {
-  [economical]: {label: 'GPT-OSS 20B', inputRate: 18182, outputRate: 27273, maxTokens: 384},
-  [advanced]: {label: 'GPT-OSS 120B', inputRate: 31818, outputRate: 68182, maxTokens: 768},
+  [economical]: {label: 'GPT-OSS 20B', inputRate: 18182, outputRate: 27273, maxTokens: 768},
+  [advanced]: {label: 'GPT-OSS 120B', inputRate: 31818, outputRate: 68182, maxTokens: 4096},
 };
 const dailyCalls = 100;
 const dailyNeurons = 5000;
@@ -74,7 +75,7 @@ async function pair(request, env) {
 }
 
 function enabled(env) {
-  return env.DEPLOYMENT_TIER === 'workers-free-confirmed' && !!env.AI && !!env.DB && !!selectModel('', env);
+  return env.DEPLOYMENT_TIER === 'workers-free-confirmed' && !!env.AI && !!env.DB && !!env.INFERENCE && /^[a-f0-9]{64}$/.test(env.RECOVERY_KEY ?? '') && !!selectModel('', env);
 }
 
 async function readJson(request, limit) {
@@ -102,7 +103,7 @@ async function readJson(request, limit) {
 async function readChat(request) {
   const data = await readJson(request, 32_768);
   if (!data || typeof data.prompt !== 'string' || !data.prompt.trim() || data.prompt.length > 6000 ||
-    typeof data.id !== 'string' || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(data.id) ||
+    typeof data.id !== 'string' || !idPattern.test(data.id) ||
     !['local', 'paid'].includes(data.route)) return null;
   return {...data, id: data.id.toLowerCase()};
 }
@@ -116,47 +117,99 @@ export const claim = `
   ON CONFLICT(id) DO NOTHING RETURNING id
 `;
 
-function finalText(result) {
-  if (!result || typeof result !== 'object') return '';
-  const value = result.response ?? result.choices?.[0]?.message?.content;
-  if (typeof value !== 'string') return '';
-  return value.replace(/^[\s\S]*?<\/think>\s*/i, '').replace(/<think>[\s\S]*$/i, '').trim();
+async function receipt(env, id, includeReply) {
+  const row = await env.DB.prepare(readReceipt + ' WHERE c.id=?').bind(id).first();
+  if (!row) return null;
+  const info = describe(row, Date.now());
+  if (includeReply && info.recoverable) {
+    try { info.reply = await unseal(row.sealed_reply, env.RECOVERY_KEY, 'reply:' + id); }
+    catch { return {...info, recoverable: false, code: 'response_unavailable'}; }
+    info.modelLabel = models[row.model]?.label ?? row.model;
+    info.responseSource = 'model';
+  }
+  return info;
 }
 
 async function chat(request, env, now, day, month) {
   const data = await readChat(request);
-  if (!data) return error('Mensagem ou identificador inválido.', 400);
+  if (!data) return error('Mensagem inválida. O limite é de 6.000 caracteres, incluindo contexto.', 400);
   if (data.route !== 'local' || !enabled(env)) return error('Modelo desativado no servidor.', 503);
+  const previous = await receipt(env, data.id, true);
+  if (previous) return json(previous, previous.state === 'processing' ? 202 : 200);
   const model = selectModel(data.prompt, env);
   const official = officialIdentity(data.prompt, model);
   if (official) return json({reply: official, route: 'local', model: null,
     modelLabel: 'Configuração verificada', responseSource: 'gateway-identity'});
   const messages = [{role: 'system', content: identity(model)}, {role: 'user', content: data.prompt}];
   const reserve = reservedNeurons(model, messages);
+  const sealed = await seal(data.prompt, env.RECOVERY_KEY, 'prompt:' + data.id);
   const inserted = await env.DB.prepare(claim)
     .bind(data.id, day, month, now.getTime(), model.id, reserve, data.id, day, dailyCalls, day, reserve, dailyNeurons).first();
   if (!inserted) {
-    const previous = await env.DB.prepare('SELECT id FROM ai_calls_v12 WHERE id=? UNION ALL SELECT id FROM ai_calls WHERE id=?')
-      .bind(data.id, data.id).first();
-    return previous ? error('Este envio já está registrado na auditoria.', 409) :
-      error('Cota diária atingida. O limite renova à meia-noite UTC, às 21h em São Paulo.', 402);
+    const duplicate = await receipt(env, data.id, true);
+    if (duplicate) return json(duplicate, duplicate.state === 'processing' ? 202 : 200);
+    const legacy = await env.DB.prepare('SELECT id FROM ai_calls WHERE id=?').bind(data.id).first();
+    return legacy ? error('Este envio antigo já está registrado.', 409) :
+      error('Cota diária atingida. O limite renova às 21h em São Paulo.', 402);
   }
-  let reply;
-  let accounted = reserve;
   try {
-    const result = await env.AI.run(model.id, {messages, max_tokens: model.maxTokens, temperature: 0.6, stream: false});
-    reply = finalText(result);
-    const input = result?.usage?.prompt_tokens;
-    const output = result?.usage?.completion_tokens;
-    if (reply && Number.isSafeInteger(input) && input > 0 && Number.isSafeInteger(output) && output > 0) {
-      accounted = neurons(model, input, output);
+    await env.INFERENCE.send({id: data.id, sealed});
+  } catch {
+    return error('O gateway não confirmou a entrada na fila. Consulte a resposta pelo mesmo ID.', 502);
+  }
+  return json({id: data.id, state: 'processing', model: model.id}, 202);
+}
+
+async function consume(env, body) {
+  if (!idPattern.test(body?.id ?? '') || typeof body.sealed !== 'string') return;
+  const {id} = body;
+  const call = await env.DB.prepare("SELECT model, created, neurons FROM ai_calls_v12 WHERE id=? AND state='started'")
+    .bind(id).first();
+  if (!call) return;
+  const started = Date.now();
+  const marker = await env.DB.prepare(`
+    INSERT INTO request_recovery(id,phase,started) VALUES (?,'processing',?)
+    ON CONFLICT(id) DO NOTHING RETURNING id
+  `).bind(id, started).first();
+  if (!marker) return;
+  const model = {id: call.model, ...models[call.model]};
+  let outcome;
+  let accounted = call.neurons;
+  let encrypted = null;
+  if (!enabled(env) || !Object.hasOwn(models, call.model)) outcome = {code: 'gateway_disabled'};
+  else if (started - call.created > 5 * 60 * 1000) outcome = {code: 'queue_expired'};
+  else {
+    let prompt;
+    try { prompt = await unseal(body.sealed, env.RECOVERY_KEY, 'prompt:' + id); }
+    catch { outcome = {code: 'queue_payload_invalid'}; }
+    if (prompt !== undefined) {
+      let result;
+      let timer;
+      try {
+        const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('deadline')), 180_000); });
+        const messages = [{role: 'system', content: identity(model)}, {role: 'user', content: prompt}];
+        result = await Promise.race([env.AI.run(model.id, {messages, max_tokens: model.maxTokens, temperature: 0.6, stream: false}), deadline]);
+        outcome = interpret(result);
+        const input = result?.usage?.prompt_tokens;
+        const output = result?.usage?.completion_tokens;
+        if (Number.isSafeInteger(input) && input > 0 && Number.isSafeInteger(output) && output > 0) accounted = neurons(model, input, output);
+      } catch (failure) {
+        outcome = failure?.message === 'deadline' ? {code: 'inference_deadline', unknown: true} : providerFailure(failure);
+      } finally { clearTimeout(timer); }
+      if (outcome.reply) {
+        try { encrypted = await seal(outcome.reply, env.RECOVERY_KEY, 'reply:' + id); }
+        catch { outcome = {code: 'response_storage_error', unknown: true}; }
+      }
     }
-  } catch { /* Keep the reservation on uncertain results. */ }
-  await env.DB.prepare('UPDATE ai_calls_v12 SET state=?, neurons=? WHERE id=?')
-    .bind(reply ? 'finished' : 'uncertain', accounted, data.id).run();
-  return reply ? json({reply, route: 'local', model: model.id,
-    modelLabel: model.label, responseSource: 'model'}) :
-    error('O modelo não confirmou uma resposta. Confira a auditoria antes de repetir.', 502);
+  }
+  const ended = Date.now();
+  const phase = encrypted ? 'finished' : outcome.unknown ? 'unknown' : 'failed';
+  await env.DB.batch([
+    env.DB.prepare('UPDATE request_recovery SET phase=?, ended=?, code=?, provider_code=?, sealed_reply=?, expires=? WHERE id=?')
+      .bind(phase, ended, outcome.code ?? null, outcome.providerCode ?? null, encrypted, encrypted ? ended + replyTtl : null, id),
+    env.DB.prepare('UPDATE ai_calls_v12 SET state=?, neurons=? WHERE id=?')
+      .bind(encrypted ? 'finished' : 'uncertain', accounted, id),
+  ]);
 }
 
 export default {
@@ -186,15 +239,29 @@ export default {
           neuronsUsed: usage?.neurons ?? 0});
       }
       if (request.method === 'GET' && pathname === '/audit' && env.DB) {
-        const rows = await env.DB.prepare(
-          "SELECT id, month, 'local' AS route, 0 AS reserved, state, model FROM ai_calls_v12 ORDER BY created DESC LIMIT 50"
-        ).all();
-        return json(rows.results);
+        const rows = await env.DB.prepare(readReceipt.replace('r.sealed_reply', 'CASE WHEN r.sealed_reply IS NOT NULL THEN 1 END AS sealed_reply') + ' ORDER BY c.created DESC LIMIT 50').all();
+        return json(rows.results.map(row => describe(row, now.getTime())));
+      }
+      if (request.method === 'GET' && pathname.startsWith('/requests/')) {
+        const id = pathname.slice('/requests/'.length).toLowerCase();
+        if (!idPattern.test(id)) return error('Identificador inválido.', 400);
+        const result = await receipt(env, id, true);
+        return result ? json(result) : error('Não há registro recuperável para este ID.', 404);
       }
       if (request.method === 'POST' && pathname === '/chat') return await chat(request, env, now, day, month);
       return error('Rota inexistente.', 404);
     } catch {
       return error('O gateway não confirmou a operação. Confira a auditoria antes de repetir.', 502);
     }
+  },
+  async queue(batch, env) {
+    for (const message of batch.messages) {
+      await consume(env, message.body);
+      message.ack();
+    }
+  },
+  async scheduled(_event, env) {
+    await env.DB.prepare('UPDATE request_recovery SET sealed_reply=NULL WHERE expires <= ? AND sealed_reply IS NOT NULL')
+      .bind(Date.now()).run();
   }
 };

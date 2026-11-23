@@ -18,7 +18,7 @@ import { claimJobSql } from './outbox';
 const voice = requireOptionalNativeModule<typeof VoiceModule>('ExpoSpeechRecognition');
 const tabs = ['Conversa', 'Memórias', 'Laboratório', 'Ajustes'] as const;
 type Tab = typeof tabs[number];
-type Job = { id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; response_model?: string | null; memory_id: string | null; memory_version: number | null };
+type Job = { id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; response_model?: string | null; recovery_state?: string | null; memory_id: string | null; memory_version: number | null };
 type Entry = { id: number; created: number; event: string };
 type Usage = { month: string; limit: number; reserved: number; inputTokens: number; outputTokens: number; paid: boolean; local: boolean; localLabel?: string; dailyLimit?: number; dailyUsed?: number; neuronLimit?: number; neuronsUsed?: number };
 const labels: Record<string, string> = { queued: 'Na fila', sending: 'Enviando', uncertain: 'Envio incerto',
@@ -46,7 +46,35 @@ function Field({ label, value, change, multiline = false, secret = false, max = 
 }
 
 const oldGateway = 'https://iapessoal-gateway-v11.km-prospect-ai-app.workers.dev';
+const recoveryGateway = 'https://iapessoal-gateway-v121.km-prospect-ai-app.workers.dev';
 const upgradedGateway = 'https://iapessoal-gateway-v12.km-prospect-ai-app.workers.dev';
+type Receipt = {id?: string; state?: string; reply?: string; error?: string; model?: string;
+  modelLabel?: string; responseSource?: string; code?: string; created?: number;
+  durationMs?: number | null; providerCode?: string | null; neurons?: number; recoverable?: boolean};
+const remoteStates: Record<string, string> = {
+  finished: 'Concluída', processing: 'Em processamento', started: 'Em processamento',
+  failed: 'Falhou', unknown: 'Resultado desconhecido', uncertain: 'Resultado desconhecido', unavailable: 'Resposta indisponível',
+};
+const receiptCodes: Record<string, string> = {
+  output_limit: 'O modelo atingiu o limite de saída. Peça uma parte específica ou divida a análise.',
+  provider_rate_limit: 'O provedor limitou as chamadas. Aguarde antes de solicitar uma nova tentativa.',
+  provider_error: 'O provedor devolveu um erro.',
+  provider_error_unclassified: 'A chamada ao provedor falhou sem um código conclusivo.',
+  empty_response: 'O provedor devolveu uma resposta final vazia.',
+  inference_deadline: 'O gateway parou de aguardar o provedor. O resultado ficou desconhecido.',
+  no_terminal_confirmation: 'O processamento ficou sem confirmação final.',
+  legacy_no_diagnostic: 'A versão anterior registrou a falha sem detalhes.',
+  legacy_response_not_retained: 'A versão anterior não guardava respostas no servidor.',
+  response_expired: 'O prazo de recuperação da resposta expirou.',
+  response_unavailable: 'O servidor não conseguiu recuperar o conteúdo armazenado.',
+  content_filter: 'O provedor interrompeu a resposta por filtro de conteúdo.',
+  unexpected_finish: 'O provedor retornou um motivo de término inesperado.',
+  gateway_disabled: 'A inferência estava desativada quando a fila foi processada.',
+  queue_expired: 'O trabalho aguardou tempo demais na fila e não foi iniciado.',
+  queue_payload_invalid: 'O consumidor não conseguiu abrir a solicitação criptografada.',
+  response_storage_error: 'A inferência foi executada, mas o gateway não confirmou o armazenamento.',
+  response_too_large: 'A resposta ultrapassou o limite de armazenamento temporário.',
+};
 const tabIcons: Record<Tab, IconName> = {Conversa: 'chat', Memórias: 'layers', Laboratório: 'flask', Ajustes: 'settings'};
 const connectionLabels = {unconfigured: 'Modo local', offline: 'Offline', checking: 'Verificando modelo',
   unreachable: 'Servidor indisponível', disabled: 'Modelo desativado', auth: 'Credencial recusada', online: 'Gateway online'};
@@ -86,6 +114,7 @@ function PersonalApp() {
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const nearEnd = useRef(true);
   const queueLock = useRef(false);
+  const checkingJobs = useRef(new Set<string>());
   const memoryLock = useRef(false);
   const [route, setRoute] = useState<Route>('local');
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -104,7 +133,7 @@ function PersonalApp() {
   const [token, setToken] = useState('');
   const [settings, setSettings] = useState({ url: '', token: '' });
   const [usage, setUsage] = useState<Usage>();
-  const [remoteAudit, setRemoteAudit] = useState<{id: string; state: string; reserved: number}[]>([]);
+  const [remoteAudit, setRemoteAudit] = useState<(Receipt & {id: string; state: string; reserved: number})[]>([]);
   const [portrait, setPortrait] = useState(palette.blueDark);
   const [listening, setListening] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -215,6 +244,7 @@ function PersonalApp() {
     const match = relevantMemory(prompt, memories);
     return match?.id === dismissedMemory ? undefined : match;
   }, [context, prompt, memories, dismissedMemory]);
+  const draftTooLong = messageForQueue(prompt, context).length > 6000;
   const freeLabel = probe?.usage?.localLabel ?? 'Ollama';
   const avatarState: AvatarState = listening ? 'listening' : busy ? 'thinking' : speaking ? 'speaking' :
     state === 'offline' || state === 'unreachable' ? 'offline' : 'neutral';
@@ -353,22 +383,21 @@ function PersonalApp() {
       }
       setJobs(current => current.map(item => item.id === job.id ? {...item, state: 'sending', url: settings.url} : item));
       let response: Response;
-      let data: { reply?: string; error?: string; model?: string; modelLabel?: string; responseSource?: string };
+      let data: Receipt;
       try {
         response = await request('/chat', { id: job.id, prompt: job.prompt, route: job.route });
         data = await response.json();
       } catch {
-        await db.runAsync("UPDATE outbox SET state='uncertain' WHERE id=?", job.id);
+        await db.runAsync("UPDATE outbox SET state='uncertain', recovery_state=NULL WHERE id=?", job.id);
         await audit(db, 'Envio sem confirmação');
-        setNotice('Envio incerto. A fila mantém o texto e não repete a chamada automaticamente.');
+        setNotice('Não conseguimos confirmar a resposta. Use Verificar resposta para consultar sem reenviar.');
         return;
       }
       if (response.ok && typeof data.reply === 'string') {
-        const model = typeof data.modelLabel === 'string' ? data.modelLabel :
-          typeof data.model === 'string' ? data.model : null;
-        await db.runAsync("UPDATE outbox SET state='done', reply=?, reply_at=?, response_model=? WHERE id=?",
-          data.reply, Date.now(), model ? ((data.responseSource === 'gateway-identity' ? 'Ficha do app · ' : '') + model).slice(0, 96) : null, job.id);
-        await audit(db, 'Resposta do modelo recebida');
+        await saveReply(db, job.id, data);
+      } else if (response.ok && data.state && settings.url === recoveryGateway) {
+        await db.runAsync("UPDATE outbox SET state='uncertain', recovery_state=? WHERE id=?",
+          data.state === 'finished' ? 'unavailable' : data.state, job.id);
       } else {
         const state = [401, 402, 503].includes(response.status) ? 'queued' :
           [409, 502].includes(response.status) ? 'uncertain' : 'rejected';
@@ -384,16 +413,79 @@ function PersonalApp() {
     }
   }
 
+  async function saveReply(store: SQLiteDatabase, id: string, data: Receipt) {
+    if (typeof data.reply !== 'string') return;
+    const model = data.modelLabel ?? data.model;
+    const updated = await store.runAsync(
+      "UPDATE outbox SET state='done', reply=?, reply_at=?, response_model=?, recovery_state=NULL WHERE id=? AND state!='done'",
+      data.reply, Date.now(), model ? ((data.responseSource === 'gateway-identity' ? 'Ficha do app · ' : '') + model).slice(0, 96) : null, id);
+    if (updated.changes) await audit(store, 'Resposta do modelo recebida');
+  }
+
+  const verifyReply = useCallback(async (job: Job, manual: boolean) => {
+    if (!db || connected === false || checkingJobs.current.has(job.id)) return;
+    if (settings.url !== recoveryGateway || ![recoveryGateway, upgradedGateway].includes(job.url)) {
+      if (manual) setNotice('A recuperação por ID está disponível no gateway 1.2.1.');
+      return;
+    }
+    checkingJobs.current.add(job.id);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(settings.url + '/requests/' + encodeURIComponent(job.id), {
+        headers: {Authorization: 'Bearer ' + settings.token}, signal: controller.signal,
+      });
+      const result = await response.json() as Receipt;
+      if (response.ok && result.state === 'finished' && typeof result.reply === 'string') {
+        await saveReply(db, job.id, result);
+        await refresh(db);
+        return;
+      }
+      if (response.status === 404 && !manual && Date.now() - job.created < 30_000) return;
+      const phase = response.status === 404 || result.state === 'finished' ? 'unavailable' : result.state;
+      if (phase && phase !== job.recovery_state && (response.ok || response.status === 404)) {
+        await db.runAsync("UPDATE outbox SET recovery_state=? WHERE id=? AND state='uncertain'", phase, job.id);
+        await refresh(db);
+      }
+      if (manual) setNotice(result.code && receiptCodes[result.code] ? receiptCodes[result.code] :
+        phase ? remoteStates[phase] ?? 'Resposta indisponível.' : result.error ?? 'Não foi possível consultar.');
+    } catch {
+      if (manual) setNotice('Não foi possível consultar. Nenhuma pergunta foi reenviada.');
+    } finally { clearTimeout(timer); checkingJobs.current.delete(job.id); }
+  }, [db, connected, settings, refresh]);
+
+  useEffect(() => {
+    if (!db || settings.url !== recoveryGateway || connected === false) return;
+    let active = true;
+    let running = false;
+    async function checkPending() {
+      if (running || !active || ['background','inactive'].includes(AppState.currentState ?? 'active')) return;
+      running = true;
+      try {
+        const pending = await db!.getAllAsync<Job>(`SELECT * FROM outbox WHERE state='uncertain' AND url IN (?,?)
+          AND (recovery_state IS NULL OR recovery_state='processing') ORDER BY created DESC LIMIT 4`, recoveryGateway, upgradedGateway);
+        if (active) await Promise.all(pending.map(job => verifyReply(job, false)));
+      } catch { /* The next foreground check can recover the result. */ }
+      finally { running = false; }
+    }
+    void checkPending();
+    const timer = setInterval(() => void checkPending(), 6500);
+    const sub = AppState.addEventListener('change', state => { if (state === 'active') void checkPending(); });
+    return () => { active = false; clearInterval(timer); sub.remove(); };
+  }, [db, settings.url, connected, verifyReply]);
+
   async function regenerate(job: Job) {
     if (!db || busy || networkLock.current) return;
-    if (job.url && job.url !== settings.url) throw new Error('Selecione o gateway original antes de gerar outra resposta.');
+    if (job.url && job.url !== settings.url && !(job.url === upgradedGateway && settings.url === recoveryGateway)) {
+      throw new Error('Selecione o gateway original antes de gerar outra resposta.');
+    }
     const id = randomUUID();
     await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version) VALUES (?,?,?,?,?,?,?)',
-      id, job.prompt, job.route, job.url, Date.now(), job.memory_id, job.memory_version);
+      id, job.prompt, job.route, settings.url, Date.now(), job.memory_id, job.memory_version);
     await audit(db, 'Nova resposta solicitada');
     nearEnd.current = true;
     await refresh(db);
-    await send({...job, id, state: 'queued', reply: null, reply_at: null});
+    await send({...job, id, url: settings.url, state: 'queued', reply: null, reply_at: null});
   }
 
   async function run() {
@@ -464,7 +556,7 @@ function PersonalApp() {
     const job = item.job!;
     const isReply = item.kind === 'reply';
     const content = isReply ? job.reply! : job.prompt;
-    const jobLabel = job.state === 'queued' && connected === false ? 'Aguardando conexão' : labels[job.state];
+    const jobLabel = job.state === 'uncertain' && job.recovery_state ? remoteStates[job.recovery_state] : job.state === 'queued' && connected === false ? 'Aguardando conexão' : labels[job.state];
     function actions() {
       const copy = {text: 'Copiar', onPress: () => void perform(async () => { await Clipboard.setStringAsync(content); setNotice('Mensagem copiada.'); })};
       const cancel = {text: 'Cancelar', style: 'cancel' as const};
@@ -511,12 +603,12 @@ function PersonalApp() {
             'Enviar · ' + (job.route === 'paid' ? 'OpenAI' : freeLabel)}</Text>
         </Pressable>}
         {!isReply && job.state === 'uncertain' && <View style={s.row}>
+          <Button label="Verificar resposta" disabled={connected === false} onPress={() => void verifyReply(job, true)} />
           <Button label="Auditoria" onPress={() => go('Ajustes')} />
-          <Button label="Recolocar na fila" disabled={busy} onPress={() =>
-            confirm('Recolocar na fila?', 'O gateway usa o mesmo identificador para evitar chamadas duplicadas.', async () => {
-              await db!.runAsync("UPDATE outbox SET state='queued' WHERE id=? AND state='uncertain'", job.id);
-              await audit(db!, 'Envio incerto recolocado na fila com o mesmo ID'); await refresh(db!);
-            })} />
+          {job.recovery_state && ['failed','unknown','unavailable'].includes(job.recovery_state) &&
+            <Button label="Tentar novamente" disabled={busy || connected === false} onPress={() =>
+              confirm('Iniciar uma nova inferência?', 'A pergunta e o contexto serão reenviados com outro ID e usarão uma nova tentativa. Se a execução anterior ficou incerta, ela pode ter consumido cota.',
+                () => regenerate(job))} />}
         </View>}
       </View>
     </View>;
@@ -625,15 +717,16 @@ function PersonalApp() {
             accessibilityRole="button" style={s.shortcut}>
             <Icon name={item.name} color="#4E9AFF" size={21} /><Text style={s.shortcutText}>{item.label}</Text>
           </Pressable>)}</View>}
+          {draftTooLong && <Text style={s.notice}>Mensagem e contexto juntos podem ter até 6.000 caracteres. Reduza o texto para enviar.</Text>}
           <View style={s.composer}>
             <IconButton name="plus" label={menu ? 'Fechar ações' : 'Mais ações'} onPress={() => setMenu(!menu)} />
             <TextInput style={[s.composeInput, {height: inputHeight}]} accessibilityLabel="Digite sua mensagem"
-              placeholder="Digite sua mensagem…" placeholderTextColor={palette.muted} multiline maxLength={6000}
+              placeholder="Digite sua mensagem…" placeholderTextColor={palette.muted} multiline
               value={prompt} onChangeText={value => { setPrompt(value); if (!value.trim()) setDismissedMemory(undefined); }}
               onContentSizeChange={event => setInputHeight(Math.min(102, Math.max(43, event.nativeEvent.contentSize.height + 7)))} />
             <IconButton name="mic" label={listening ? 'Parar ditado' : 'Ditar'} onPress={() => listening ? voice?.stop() : void perform(dictate)} />
             <IconButton name="send" label={state === 'online' ? 'Preparar envio' : 'Adicionar à fila'}
-              accent disabled={!prompt.trim()} onPress={() => void perform(queue)} />
+              accent disabled={!prompt.trim() || draftTooLong} onPress={() => void perform(queue)} />
           </View>
         </View>
       </View> : <ScrollView ref={panels} keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
@@ -744,13 +837,13 @@ function PersonalApp() {
       {tab === 'Ajustes' && <>
         <Text style={s.title}>Ajustes</Text>
         <View style={s.card}><Text style={s.section}>Gateway de modelos</Text>
-          {settings.url === oldGateway && <Button label="Conectar ao gateway 1.2" primary onPress={() =>
-            confirm('Usar o gateway 1.2?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
+          {[oldGateway, upgradedGateway].includes(settings.url) && <Button label="Conectar ao gateway 1.2.1" primary onPress={() =>
+            confirm('Usar o gateway 1.2.1?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
               async () => {
-                const credentials = {...settings, url: upgradedGateway};
+                const credentials = {...settings, url: recoveryGateway};
                 await SecureStore.setItemAsync('gatewayCredentials', JSON.stringify(credentials));
-                setSettings(credentials); setUrl(upgradedGateway); setUsage(undefined); setRemoteAudit([]);
-                await audit(db, 'Gateway 1.2 selecionado');
+                setSettings(credentials); setUrl(recoveryGateway); setUsage(undefined); setRemoteAudit([]);
+                await audit(db, 'Gateway 1.2.1 selecionado');
               })} />}
           {typeof probe?.usage?.dailyUsed === 'number' && <Text style={s.muted}>
             {probe.usage.dailyUsed}/{probe.usage.dailyLimit} tentativas hoje · {probe.usage.neuronsUsed}/{probe.usage.neuronLimit} Neurons
@@ -776,9 +869,15 @@ function PersonalApp() {
           {usage && <Text style={s.text}>{usage.month} · {money(usage.reserved)} reservados de {money(usage.limit)}
             {'\n'}OpenAI informou {usage.inputTokens} tokens de entrada e {usage.outputTokens} de saída.
             {'\n'}Ollama {usage.local ? 'habilitado' : 'desativado'} · OpenAI {usage.paid ? 'habilitada' : 'desativada'}</Text>}
-          {remoteAudit.map(line => <Text key={line.id} style={s.muted}>
-            {line.id.slice(0, 8)} · {line.state} · {money(line.reserved)}
-          </Text>)}
+          {remoteAudit.map(line => <Pressable key={line.id} accessibilityRole="button" onPress={() => Alert.alert(
+            'Solicitação ' + line.id,
+            [remoteStates[line.state] ?? line.state, line.model, line.created ? new Date(line.created).toLocaleString('pt-BR') : null,
+              line.durationMs == null ? null : (line.durationMs / 1000).toFixed(1) + ' s de processamento',
+              line.neurons == null ? null : line.neurons + ' Neurons estimados',
+              line.code ? line.code + ' · ' + (receiptCodes[line.code] ?? 'Motivo indisponível') : null,
+              line.providerCode ? 'Código do provedor ' + line.providerCode : null].filter(Boolean).join('\n')
+          )}><Text style={s.muted}>{line.id.slice(0, 8)} · {remoteStates[line.state] ?? line.state}
+            {line.neurons == null ? '' : ' · ' + line.neurons + ' Neurons'}</Text></Pressable>)}
         </View>
         <View style={s.card}><Text style={s.section}>Aparência da personagem</Text>
           <View style={s.row}>{[['Azul', palette.blueDark], ['Verde', '#BDEA9D'], ['Lavanda', '#CFB6FF'], ['Pêssego', '#FFC9AC']].map(([name, color]) =>
