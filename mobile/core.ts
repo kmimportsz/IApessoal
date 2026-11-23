@@ -72,3 +72,24 @@ export function messageForQueue(prompt: string, context: string): string {
   if (!context) return message;
   return 'Contexto escolhido pelo usuário:\n' + context + '\n\nMensagem atual:\n' + message;
 }
+
+const ignored = new Set('para sobre como qual quais quero quando minha minhas meu meus nossa isso esse essa seria pode usar ainda mais muito que uma tenho'.split(' '));
+
+export function memoryKey(value: string) {
+  return normalize(value).replace(/[\p{P}\p{Z}\s]+/gu, ' ').trim();
+}
+
+export function relevantMemory(prompt: string, memories: Memory[]): Memory | undefined {
+  const terms = Array.from(new Set(memoryKey(prompt).split(' ').filter(word => word.length >= 4 && !ignored.has(word))));
+  if (!terms.length) return undefined;
+  return memories.filter(memory => !memory.private && memory.body.length <= 1200)
+    .map(memory => {
+      const words = new Set(memoryKey(memory.body).split(' '));
+      const hits = terms.filter(term => words.has(term));
+      const score = hits.length >= 2 || (terms.length === 1 && hits.some(term => term.length >= 7))
+        ? hits.length / Math.sqrt(Math.max(words.size, 1)) : 0;
+      return {memory, score};
+    })
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.memory.updated - a.memory.updated)[0]?.memory;
+}

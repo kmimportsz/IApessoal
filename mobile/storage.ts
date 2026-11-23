@@ -19,6 +19,7 @@ export const schema = `
 `;
 
 export const additions = {
+  response_model: 'ALTER TABLE outbox ADD COLUMN response_model TEXT',
   reply_at: 'ALTER TABLE outbox ADD COLUMN reply_at INTEGER',
   memory_id: 'ALTER TABLE outbox ADD COLUMN memory_id TEXT',
   memory_version: 'ALTER TABLE outbox ADD COLUMN memory_version INTEGER',

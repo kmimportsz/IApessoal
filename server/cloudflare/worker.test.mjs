@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import worker from './worker.mjs';
-import { PERSONA } from './persona.mjs';
+import { selectModel } from './worker.mjs';
 
 const token = 'x'.repeat(43);
 const ownerHash = createHash('sha256').update(token).digest('hex');
@@ -33,9 +33,10 @@ function setup(t) {
     },
     AI: {run: async (model, input) => {
       calls++;
-      assert.equal(model, '@cf/openai/gpt-oss-120b');
-      assert.equal(input.messages[0].content, PERSONA);
-      return {response: '<think>interno</think> Resposta de teste'};
+      assert.match(input.messages[0].content, new RegExp(model));
+      assert.match(input.messages[0].content, /SQLite/);
+      assert.equal(input.messages[1].role, 'user');
+      return {response: '<think>interno</think> Resposta de teste', usage: {prompt_tokens: 330, completion_tokens: 52}};
     }},
   };
   const call = (path, data, credential = token) => worker.fetch(new Request('https://ipe.test' + path, {
@@ -68,12 +69,13 @@ test('Deduplicação concorrente, limite diário e auditoria sem conteúdo', asy
   assert.deepEqual(results.map(x => x.status).sort(), [200, 409]);
   const reply = await results.find(x => x.status === 200).json();
   assert.equal(reply.reply, 'Resposta de teste');
-  const burst = await Promise.all(Array.from({length: 12}, () => call('/chat', job())));
-  assert.equal(burst.filter(x => x.status === 200).length, 7);
-  assert.equal(burst.filter(x => x.status === 402).length, 5);
-  assert.equal(count(), 8);
+  assert.equal(reply.model, '@cf/openai/gpt-oss-20b');
+  const burst = await Promise.all(Array.from({length: 105}, () => call('/chat', job())));
+  assert.equal(burst.filter(x => x.status === 200).length, 99);
+  assert.equal(burst.filter(x => x.status === 402).length, 6);
+  assert.equal(count(), 100);
   const audit = await (await call('/audit')).json();
-  assert.equal(audit.length, 8);
+  assert.equal(audit.length, 50);
   assert.equal(audit.every(row => row.state === 'finished'), true);
   assert.equal(JSON.stringify(audit).includes(first.prompt), false);
 });
@@ -108,4 +110,33 @@ test('Pareamento é único, substitui a credencial temporária e mantém só o h
   assert.equal((await exchange('https://ipe.test')).status, 409);
   const stored = await env.DB.prepare('SELECT token_hash FROM gateway_owner WHERE singleton=1').first();
   assert.equal(stored.token_hash, createHash('sha256').update(newToken).digest('hex'));
+});
+
+test('Roteamento pesa a mensagem atual, respeita configuração e fixa a identidade do modelo', () => {
+  assert.equal(selectModel('oi', {}).label, 'GPT-OSS 20B');
+  assert.equal(selectModel('Compare duas estratégias de aprendizagem.', {}).label, 'GPT-OSS 120B');
+  assert.equal(selectModel('Contexto escolhido pelo usuário:\narquitetura\n\nMensagem atual:\nOi', {}).label, 'GPT-OSS 20B');
+  assert.equal(selectModel('oi', {MODEL: '@cf/openai/gpt-oss-120b'}).label, 'GPT-OSS 120B');
+  assert.equal(selectModel('oi', {MODEL: 'não cadastrado'}), null);
+});
+
+test('Reserva de Neurons bloqueia mensagens longas antes do limite de tentativas', async t => {
+  const {call, job, env} = setup(t);
+  env.AI.run = async () => { throw Error('sem confirmação'); };
+  const huge = 'analisar ' + 'ação '.repeat(1150);
+  const burst = await Promise.all(Array.from({length: 45}, () => call('/chat', {...job(), prompt: huge})));
+  assert.ok(burst.some(result => result.status === 502));
+  assert.ok(burst.some(result => result.status === 402));
+  const status = await (await call('/status')).json();
+  assert.ok(status.neuronsUsed <= status.neuronLimit);
+  assert.ok(status.dailyUsed < status.dailyLimit);
+});
+
+test('A ficha oficial explica a persistência local e mantém o modelo que serviu o envio', async t => {
+  const {call, job} = setup(t);
+  const actual = await (await call('/chat', {...job(), prompt: 'Qual é seu nome, modelo e como funciona sua memória?'})).json();
+  assert.equal(actual.responseSource, 'gateway-identity');
+  assert.match(actual.reply, /GPT-OSS 20B/);
+  assert.match(actual.reply, /SQLite/);
+  assert.match(actual.reply, /contexto que você aprovar/);
 });

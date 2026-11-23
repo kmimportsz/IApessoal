@@ -1,5 +1,7 @@
 # Inteligência Pessoal Evolutiva
 
+A [versão 1.2](server/cloudflare/V1.2.md) adiciona identidade verificável, seleção de modelo e contexto local revisável.
+
 ## Versão 1.1 · Prévia iPhone
 
 Abra no Safari e toque em **Abrir no Expo Go**. [Prévia iPhone](https://iapessoal-preview-v11.km-prospect-ai-app.workers.dev/)

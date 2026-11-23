@@ -11,16 +11,16 @@ import * as Speech from 'expo-speech';
 import { randomUUID } from 'expo-crypto';
 import { requireOptionalNativeModule } from 'expo';
 import type { ExpoSpeechRecognitionModule as VoiceModule } from 'expo-speech-recognition';
-import { categories, connectionState, eligible, endpoint, experiment, matches, messageForQueue, preferenceCandidate, type Category, type Memory, type Route } from './core';
+import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, preferenceCandidate, relevantMemory, type Category, type Memory, type Route } from './core';
 import { audit, initialize } from './storage';
 import { claimJobSql } from './outbox';
 
 const voice = requireOptionalNativeModule<typeof VoiceModule>('ExpoSpeechRecognition');
 const tabs = ['Conversa', 'Memórias', 'Laboratório', 'Ajustes'] as const;
 type Tab = typeof tabs[number];
-type Job = { id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; memory_id: string | null; memory_version: number | null };
+type Job = { id: string; prompt: string; route: Route; url: string; state: string; reply: string | null; created: number; reply_at: number | null; response_model?: string | null; memory_id: string | null; memory_version: number | null };
 type Entry = { id: number; created: number; event: string };
-type Usage = { month: string; limit: number; reserved: number; inputTokens: number; outputTokens: number; paid: boolean; local: boolean };
+type Usage = { month: string; limit: number; reserved: number; inputTokens: number; outputTokens: number; paid: boolean; local: boolean; localLabel?: string; dailyLimit?: number; dailyUsed?: number; neuronLimit?: number; neuronsUsed?: number };
 const labels: Record<string, string> = { queued: 'Na fila', sending: 'Enviando', uncertain: 'Envio incerto',
   done: 'Respondido', rejected: 'Recusado' };
 
@@ -45,6 +45,8 @@ function Field({ label, value, change, multiline = false, secret = false, max = 
   </View>;
 }
 
+const oldGateway = 'https://iapessoal-gateway-v11.km-prospect-ai-app.workers.dev';
+const upgradedGateway = 'https://iapessoal-gateway-v12.km-prospect-ai-app.workers.dev';
 const tabIcons: Record<Tab, IconName> = {Conversa: 'chat', Memórias: 'layers', Laboratório: 'flask', Ajustes: 'settings'};
 const connectionLabels = {unconfigured: 'Modo local', offline: 'Offline', checking: 'Verificando modelo',
   unreachable: 'Servidor indisponível', disabled: 'Modelo desativado', auth: 'Credencial recusada', online: 'Gateway online'};
@@ -65,6 +67,8 @@ function PersonalApp() {
   const [prompt, setPrompt] = useState('');
   const [context, setContext] = useState('');
   const [contextMemory, setContextMemory] = useState<Memory>();
+  const [dismissedMemory, setDismissedMemory] = useState<string>();
+  const [probeCount, setProbeCount] = useState(0);
   const [preference, setPreference] = useState<string>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [chatQuery, setChatQuery] = useState('');
@@ -82,6 +86,7 @@ function PersonalApp() {
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const nearEnd = useRef(true);
   const queueLock = useRef(false);
+  const memoryLock = useRef(false);
   const [route, setRoute] = useState<Route>('local');
   const [jobs, setJobs] = useState<Job[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -201,10 +206,16 @@ function PersonalApp() {
       else { controller?.abort(); controller = undefined; }
     });
     return () => { active = false; controller?.abort(); clearInterval(timer); sub.remove(); };
-  }, [settings, connected]);
+  }, [settings, connected, probeCount]);
 
   const state = connectionState(Boolean(settings.url && settings.token), connected, probe?.code,
     route === 'paid' ? probe?.usage?.paid : probe?.usage?.local);
+  const suggestedMemory = useMemo(() => {
+    if (context || prompt.trim().length < 5) return undefined;
+    const match = relevantMemory(prompt, memories);
+    return match?.id === dismissedMemory ? undefined : match;
+  }, [context, prompt, memories, dismissedMemory]);
+  const freeLabel = probe?.usage?.localLabel ?? 'Ollama';
   const avatarState: AvatarState = listening ? 'listening' : busy ? 'thinking' : speaking ? 'speaking' :
     state === 'offline' || state === 'unreachable' ? 'offline' : 'neutral';
   const rows = useMemo(() => {
@@ -244,20 +255,27 @@ function PersonalApp() {
   }
 
   async function saveMemory() {
-    if (!db || !body.trim()) return;
-    if (edit) {
-      const update = await db.runAsync(
-        'UPDATE memory SET kind=?,body=?,private=?,updated=?,version=version+1 WHERE id=? AND version=?',
-        kind, body.trim(), Number(privateFlag), Date.now(), edit.id, edit.version,
-      );
-      if (!update.changes) throw new Error('A memória mudou. Abra a versão mais recente para editar.');
-    } else {
-      await db.runAsync('INSERT INTO memory VALUES (?,?,?,?,?,1)',
-        randomUUID(), kind, body.trim(), Number(privateFlag), Date.now());
-    }
-    await audit(db, edit ? 'Memória corrigida' : 'Memória criada');
-    setEdit(undefined); setBody(''); setPrivateFlag(true); setEditor(false);
-    await refresh(db);
+    if (!db || !body.trim() || memoryLock.current) return;
+    memoryLock.current = true;
+    try {
+      const existing = await db.getAllAsync<Memory>('SELECT * FROM memory');
+      if (existing.some(item => item.id !== edit?.id && memoryKey(edit?.body ?? '') !== memoryKey(body) && memoryKey(item.body) === memoryKey(body))) {
+        throw new Error('Já existe uma memória com este conteúdo no aparelho.');
+      }
+      if (edit) {
+        const update = await db.runAsync(
+          'UPDATE memory SET kind=?,body=?,private=?,updated=?,version=version+1 WHERE id=? AND version=?',
+          kind, body.trim(), Number(privateFlag), Date.now(), edit.id, edit.version,
+        );
+        if (!update.changes) throw new Error('A memória mudou. Abra a versão mais recente para editar.');
+      } else {
+        await db.runAsync('INSERT INTO memory VALUES (?,?,?,?,?,1)',
+          randomUUID(), kind, body.trim(), Number(privateFlag), Date.now());
+      }
+      await audit(db, edit ? 'Memória corrigida' : 'Memória criada');
+      setEdit(undefined); setBody(''); setPrivateFlag(true); setEditor(false);
+      await refresh(db);
+    } finally { memoryLock.current = false; }
   }
 
   async function removeMemory(item: Memory) {
@@ -288,7 +306,7 @@ function PersonalApp() {
   function confirmSend(job: Job) {
     confirm('Enviar mensagem?', job.route === 'paid'
       ? 'O texto exibido na conversa, incluindo o contexto, irá ao gateway e à OpenAI. A chamada pode consumir seu orçamento.'
-      : 'O texto exibido na conversa, incluindo o contexto, irá ao gateway configurado para processamento no Ollama.',
+      : 'O texto exibido no balão, incluindo o contexto selecionado, será enviado ao gateway para gerar a resposta.',
     () => send(job));
   }
 
@@ -310,8 +328,9 @@ function PersonalApp() {
         memory_version: contextMemory?.version ?? null};
       await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version) VALUES (?,?,?,?,?,?,?)',
         job.id, job.prompt, job.route, job.url, job.created, job.memory_id, job.memory_version);
-      setPreference(preferenceCandidate(prompt));
-      setPrompt(''); clearContext();
+      const candidate = preferenceCandidate(prompt);
+      setPreference(candidate && !memories.some(item => item.kind === 'Preferência' && memoryKey(item.body) === memoryKey(candidate)) ? candidate : undefined);
+      setPrompt(''); setDismissedMemory(undefined); clearContext();
       nearEnd.current = true;
       await audit(db, 'Mensagem adicionada à fila');
       await refresh(db);
@@ -334,7 +353,7 @@ function PersonalApp() {
       }
       setJobs(current => current.map(item => item.id === job.id ? {...item, state: 'sending', url: settings.url} : item));
       let response: Response;
-      let data: { reply?: string; error?: string };
+      let data: { reply?: string; error?: string; model?: string; modelLabel?: string; responseSource?: string };
       try {
         response = await request('/chat', { id: job.id, prompt: job.prompt, route: job.route });
         data = await response.json();
@@ -345,7 +364,10 @@ function PersonalApp() {
         return;
       }
       if (response.ok && typeof data.reply === 'string') {
-        await db.runAsync("UPDATE outbox SET state='done', reply=?, reply_at=? WHERE id=?", data.reply, Date.now(), job.id);
+        const model = typeof data.modelLabel === 'string' ? data.modelLabel :
+          typeof data.model === 'string' ? data.model : null;
+        await db.runAsync("UPDATE outbox SET state='done', reply=?, reply_at=?, response_model=? WHERE id=?",
+          data.reply, Date.now(), model ? ((data.responseSource === 'gateway-identity' ? 'Ficha do app · ' : '') + model).slice(0, 96) : null, job.id);
         await audit(db, 'Resposta do modelo recebida');
       } else {
         const state = [401, 402, 503].includes(response.status) ? 'queued' :
@@ -357,8 +379,21 @@ function PersonalApp() {
     } finally {
       networkLock.current = false;
       setBusy(false);
+      setProbeCount(count => count + 1);
       await refresh(db);
     }
+  }
+
+  async function regenerate(job: Job) {
+    if (!db || busy || networkLock.current) return;
+    if (job.url && job.url !== settings.url) throw new Error('Selecione o gateway original antes de gerar outra resposta.');
+    const id = randomUUID();
+    await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version) VALUES (?,?,?,?,?,?,?)',
+      id, job.prompt, job.route, job.url, Date.now(), job.memory_id, job.memory_version);
+    await audit(db, 'Nova resposta solicitada');
+    nearEnd.current = true;
+    await refresh(db);
+    await send({...job, id, state: 'queued', reply: null, reply_at: null});
   }
 
   async function run() {
@@ -457,17 +492,23 @@ function PersonalApp() {
       <View style={[s.bubble, isReply ? s.assistantBubble : s.userBubble]}>
         <Text style={s.message} selectable>{content}</Text>
         <View style={s.bubbleMeta}>
-          <Text style={s.muted}>{!isReply && job.state !== 'done' ? jobLabel + ' · ' : ''}{time(item.date)}</Text>
+          <Text style={s.muted}>{isReply && job.response_model ? job.response_model + ' · ' : ''}{!isReply && job.state !== 'done' ? jobLabel + ' · ' : ''}{time(item.date)}</Text>
           <Pressable accessibilityRole="button" accessibilityLabel="Ações da mensagem" onPress={actions} style={s.messageAction}>
             <Icon name="more" size={19} />
           </Pressable>
         </View>
-        {isReply && <Pressable accessibilityRole="button" onPress={() => speak(content)} style={s.inlineAction}>
-          <Text style={s.link}>Ouvir resposta</Text></Pressable>}
+        {isReply && <View style={s.replyActions}>
+          <Pressable accessibilityRole="button" onPress={() => speak(content)} style={s.inlineAction}>
+            <Text style={s.link}>Ouvir</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={busy || connected === false || !settings.url}
+            onPress={() => confirm('Gerar outra resposta?', 'O texto e o contexto originais serão enviados novamente. Cada nova resposta usa uma tentativa.',
+              () => regenerate(job))} style={s.inlineAction}>
+            <Text style={s.link}>Gerar novamente</Text></Pressable>
+        </View>}
         {!isReply && job.state === 'queued' && <Pressable accessibilityRole="button" disabled={busy || connected === false || !settings.url}
           style={s.inlineAction} onPress={() => confirmSend(job)}>
           <Text style={s.link}>{!settings.url ? 'Configure um gateway para enviar' : connected === false ? 'Envio disponível ao reconectar' :
-            'Enviar · ' + (job.route === 'paid' ? 'OpenAI' : 'Ollama')}</Text>
+            'Enviar · ' + (job.route === 'paid' ? 'OpenAI' : freeLabel)}</Text>
         </Pressable>}
         {!isReply && job.state === 'uncertain' && <View style={s.row}>
           <Button label="Auditoria" onPress={() => go('Ajustes')} />
@@ -553,6 +594,16 @@ function PersonalApp() {
                 newMemory('Preferência', preference); setPreference(undefined);
               }} /><Button label="Agora não" onPress={() => setPreference(undefined)} /></View>
             </View>}
+            {suggestedMemory && <View style={s.card}>
+              <Text style={s.kicker}>MEMÓRIA RELACIONADA · SÓ NESTE APARELHO</Text>
+              <Text style={s.text} selectable>{suggestedMemory.body}</Text>
+              <View style={s.row}>
+                <Button label="Incluir neste envio" onPress={() => {
+                  setContext(suggestedMemory.body); setContextMemory(suggestedMemory); nearEnd.current = true;
+                }} />
+                <Button label="Ignorar" onPress={() => setDismissedMemory(suggestedMemory.id)} />
+              </View>
+            </View>}
             {!!context && <View style={s.card}>
               <Text style={s.kicker}>CONTEXTO DO PRÓXIMO ENVIO</Text>
               <Text style={s.text} selectable>{context}</Text>
@@ -563,12 +614,14 @@ function PersonalApp() {
           {menu && <View style={s.card}>
             <Text style={s.label}>Modelo do próximo envio</Text>
             <View style={s.row}>
-              <Button label="Ollama" primary={route === 'local'} onPress={() => { setRoute('local'); setMenu(false); }} />
+              <Button label={freeLabel} primary={route === 'local'} onPress={() => { setRoute('local'); setMenu(false); }} />
               <Button label="OpenAI · pago" primary={route === 'paid'} onPress={() => { setRoute('paid'); setMenu(false); }} />
               <Button label="Usar uma memória" onPress={() => go('Memórias')} />
             </View>
+            {!!rows.length && <View style={s.row}>{shortcuts.map(item =>
+              <Button key={item.label} label={item.label} onPress={item.action} />)}</View>}
           </View>}
-          {!keyboardOpen && <View style={s.shortcuts}>{shortcuts.map(item => <Pressable key={item.label} onPress={item.action}
+          {!keyboardOpen && !rows.length && <View style={s.shortcuts}>{shortcuts.map(item => <Pressable key={item.label} onPress={item.action}
             accessibilityRole="button" style={s.shortcut}>
             <Icon name={item.name} color="#4E9AFF" size={21} /><Text style={s.shortcutText}>{item.label}</Text>
           </Pressable>)}</View>}
@@ -576,7 +629,7 @@ function PersonalApp() {
             <IconButton name="plus" label={menu ? 'Fechar ações' : 'Mais ações'} onPress={() => setMenu(!menu)} />
             <TextInput style={[s.composeInput, {height: inputHeight}]} accessibilityLabel="Digite sua mensagem"
               placeholder="Digite sua mensagem…" placeholderTextColor={palette.muted} multiline maxLength={6000}
-              value={prompt} onChangeText={setPrompt}
+              value={prompt} onChangeText={value => { setPrompt(value); if (!value.trim()) setDismissedMemory(undefined); }}
               onContentSizeChange={event => setInputHeight(Math.min(102, Math.max(43, event.nativeEvent.contentSize.height + 7)))} />
             <IconButton name="mic" label={listening ? 'Parar ditado' : 'Ditar'} onPress={() => listening ? voice?.stop() : void perform(dictate)} />
             <IconButton name="send" label={state === 'online' ? 'Preparar envio' : 'Adicionar à fila'}
@@ -691,6 +744,17 @@ function PersonalApp() {
       {tab === 'Ajustes' && <>
         <Text style={s.title}>Ajustes</Text>
         <View style={s.card}><Text style={s.section}>Gateway de modelos</Text>
+          {settings.url === oldGateway && <Button label="Conectar ao gateway 1.2" primary onPress={() =>
+            confirm('Usar o gateway 1.2?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
+              async () => {
+                const credentials = {...settings, url: upgradedGateway};
+                await SecureStore.setItemAsync('gatewayCredentials', JSON.stringify(credentials));
+                setSettings(credentials); setUrl(upgradedGateway); setUsage(undefined); setRemoteAudit([]);
+                await audit(db, 'Gateway 1.2 selecionado');
+              })} />}
+          {typeof probe?.usage?.dailyUsed === 'number' && <Text style={s.muted}>
+            {probe.usage.dailyUsed}/{probe.usage.dailyLimit} tentativas hoje · {probe.usage.neuronsUsed}/{probe.usage.neuronLimit} Neurons
+          </Text>}
           <Field label="Endereço HTTPS" value={url} change={setUrl} max={500} />
           <Field label="Credencial do proprietário" value={token} change={setToken} secret max={300} />
           <View style={s.row}>
@@ -762,11 +826,12 @@ const s = StyleSheet.create({
   dayText: {color: palette.muted, fontSize: 12, borderWidth: 1, borderColor: palette.border, borderRadius: 14, paddingVertical: 4, paddingHorizontal: 12},
   messageRow: {flexDirection: 'row', alignItems: 'flex-start', gap: 8},
   userRow: {justifyContent: 'flex-end'},
-  bubble: {maxWidth: '87%', paddingTop: 11, paddingHorizontal: 13, paddingBottom: 3, borderRadius: 18, borderWidth: 1},
+  replyActions: {flexDirection: 'row', flexWrap: 'wrap', gap: 14},
+  bubble: {maxWidth: '87%', paddingTop: 9, paddingHorizontal: 12, paddingBottom: 2, borderRadius: 18, borderWidth: 1},
   assistantBubble: {backgroundColor: palette.assistant, borderColor: '#263649', borderTopLeftRadius: 7},
   userBubble: {backgroundColor: palette.user, borderColor: '#205694', borderTopRightRadius: 7},
   bubbleMeta: {flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 5, flexWrap: 'wrap'},
-  message: {color: palette.text, fontSize: 16, lineHeight: 23}, messageAction: {minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center'},
+  message: {color: palette.text, fontSize: 16, lineHeight: 24}, messageAction: {minHeight: 36, minWidth: 34, alignItems: 'center', justifyContent: 'center'},
   inlineAction: {minHeight: 44, justifyContent: 'center'}, link: {color: '#A2CCFF', fontSize: 13, fontWeight: '600'},
   empty: {padding: 19, minHeight: 125, alignItems: 'center', justifyContent: 'center', gap: 10},
   emptyTitle: {color: palette.text, fontSize: 23, fontWeight: '700', letterSpacing: -.5, textAlign: 'center'},

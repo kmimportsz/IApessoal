@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { connectionState, eligible, endpoint, experiment, matches, messageForQueue, preferenceCandidate } from './core.ts';
+import { connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, preferenceCandidate, relevantMemory } from './core.ts';
 
 test('Busca tolera acentos e ordem na versão candidata', () => {
   assert.equal(matches('Ação planejada para amanhã', 'amanha acao', 2), true);
@@ -43,4 +43,13 @@ test('A sugestão de memória exige preferência explícita e passa por filtro b
 test('O texto marcado como contexto aparece explicitamente na mensagem enfileirada', () => {
   assert.equal(messageForQueue('  Olá  ', ''), 'Olá');
   assert.equal(messageForQueue('  Olá ', 'Conversa anterior'), 'Contexto escolhido pelo usuário:\nConversa anterior\n\nMensagem atual:\nOlá');
+});
+
+test('Recuperação local escolhe informação pertinente e exclui conteúdo privado', () => {
+  const shared = {id:'1', body:'O roteiro Aurora usa a etiqueta violeta nos arquivos.', kind:'Projeto' as const, private:0, version:1, updated:1};
+  const hidden = {...shared, id:'2', private:1, updated:2};
+  assert.equal(relevantMemory('Qual a etiqueta do roteiro Aurora?', [hidden, shared])?.id, '1');
+  assert.equal(relevantMemory('Qual a etiqueta do roteiro Aurora?', [hidden]), undefined);
+  assert.equal(relevantMemory('Oi', [shared]), undefined);
+  assert.equal(memoryKey(' AÇÃO,  nova! '), memoryKey('acao nova'));
 });
