@@ -1,0 +1,18 @@
+{
+  "name": "ipe-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {"start":"expo start","check":"tsc --noEmit","test":"node --experimental-strip-types --test core.test.ts"},
+  "dependencies":{
+    "expo":"~54.0.38",
+    "expo-crypto":"~15.0.9",
+    "expo-secure-store":"~15.0.8",
+    "expo-speech":"~14.0.8",
+    "expo-speech-recognition":"^3.1.3",
+    "expo-sqlite":"~16.0.10",
+    "react":"19.1.0",
+    "react-native":"0.81.5"
+  },
+  "devDependencies":{"@types/react":"~19.1.10","typescript":"~5.9.2"}
+}

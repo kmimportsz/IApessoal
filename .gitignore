@@ -1,0 +1,9 @@
+node_modules/
+.expo/
+__pycache__/
+*.sqlite3*
+.env
+.env.*
+dist/
+android/
+ios/
