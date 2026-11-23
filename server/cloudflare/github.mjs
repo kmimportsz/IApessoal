@@ -201,7 +201,8 @@ export function evidence(result,files) {
   const choice=result?.choices?.[0];
   if (choice?.finish_reason && choice.finish_reason!=='stop') throw Error('Resposta incompleta');
   const raw=choice?.message?.content??result?.response;
-  const item=JSON.parse(raw.trim().replace(/^\x60\x60\x60(?:json)?\s*/i,'').replace(/\s*\x60\x60\x60$/,''));
+  const item=typeof raw==='string'?JSON.parse(raw.trim().replace(/^\x60\x60\x60(?:json)?\s*/i,'').replace(/\s*\x60\x60\x60$/,'')):raw;
+  if (!item || typeof item!=='object') throw Error('Resposta inválida');
   if (item.finding===null) return null;
   const f=item.finding;
   const file=files.find(file=>file.path===f?.path);

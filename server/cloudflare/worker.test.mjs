@@ -347,7 +347,7 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
     assert.match(payload.messages[1].content,/export const label = input.value/);
     const finding={path:'src/index.js',line:1,priority:'média',confidence:'média',problem:'Entrada pode faltar.',
       impact:'Renderização interrompida.',suggestion:'Valide antes de ler o valor.'};
-    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({finding})}}]};
+    return {response:{finding},usage:{prompt_tokens:100,completion_tokens:100}};
   };
   assert.equal((await call('/github/installations',undefined,'z'.repeat(43))).status,401);
   assert.equal((await call('/github/repository',{id:13,state:'active'})).status,404);
