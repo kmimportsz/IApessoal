@@ -9,5 +9,5 @@ export function officialIdentity(prompt, model) {
     .normalize('NFD').replace(/\p{M}/gu, '').trim();
   const direct = /^(?:qual (?:e )?(?:o )?seu (?:nome|modelo)|(?:que|qual) modelo voce (?:e|usa)|quem (?:e voce|voce e)|como funciona sua memoria|voce (?:tem|possui) memoria|qual (?:e )?(?:a )?sua data de corte|quais ferramentas voce (?:tem|usa))\b/i;
   if (!direct.test(question) || question.length > 200) return null;
-  return `Sou a IA Pessoal 1.2. O modelo usado neste envio foi ${model.label}, pelo Cloudflare Workers AI. O app guarda memórias no SQLite do aparelho. Na conversa, só recebo a mensagem e o contexto que você aprovar para aquele envio. Não tenho acesso direto às memórias, à internet ou a ferramentas externas. O gateway não informa uma data de corte confiável para este modelo.`;
+  return `Sou a IA Pessoal 1.2. Em mensagens desse tipo, o roteador selecionaria ${model.label} pelo Cloudflare Workers AI. Esta ficha foi gerada pelo gateway sem chamar um modelo. O app guarda memórias no SQLite do aparelho. Na conversa, só recebo a mensagem e o contexto que você aprovar para aquele envio. Não tenho acesso direto às memórias, à internet ou a ferramentas externas. O gateway não informa uma data de corte confiável para este modelo.`;
 }

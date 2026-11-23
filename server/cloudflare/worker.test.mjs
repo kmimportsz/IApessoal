@@ -132,10 +132,12 @@ test('Reserva de Neurons bloqueia mensagens longas antes do limite de tentativas
   assert.ok(status.dailyUsed < status.dailyLimit);
 });
 
-test('A ficha oficial explica a persistência local e mantém o modelo que serviu o envio', async t => {
-  const {call, job} = setup(t);
+test('A ficha oficial explica a persistência e informa a seleção prevista sem inferência', async t => {
+  const {call, job, count} = setup(t);
   const actual = await (await call('/chat', {...job(), prompt: 'Qual é seu nome, modelo e como funciona sua memória?'})).json();
   assert.equal(actual.responseSource, 'gateway-identity');
+  assert.equal(actual.model, null);
+  assert.equal(count(), 0);
   assert.match(actual.reply, /GPT-OSS 20B/);
   assert.match(actual.reply, /SQLite/);
   assert.match(actual.reply, /contexto que você aprovar/);

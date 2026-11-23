@@ -128,6 +128,9 @@ async function chat(request, env, now, day, month) {
   if (!data) return error('Mensagem ou identificador inválido.', 400);
   if (data.route !== 'local' || !enabled(env)) return error('Modelo desativado no servidor.', 503);
   const model = selectModel(data.prompt, env);
+  const official = officialIdentity(data.prompt, model);
+  if (official) return json({reply: official, route: 'local', model: null,
+    modelLabel: 'Configuração verificada', responseSource: 'gateway-identity'});
   const messages = [{role: 'system', content: identity(model)}, {role: 'user', content: data.prompt}];
   const reserve = reservedNeurons(model, messages);
   const inserted = await env.DB.prepare(claim)
@@ -151,9 +154,8 @@ async function chat(request, env, now, day, month) {
   } catch { /* Keep the reservation on uncertain results. */ }
   await env.DB.prepare('UPDATE ai_calls_v12 SET state=?, neurons=? WHERE id=?')
     .bind(reply ? 'finished' : 'uncertain', accounted, data.id).run();
-  const official = reply && officialIdentity(data.prompt, model);
-  return reply ? json({reply: official || reply, route: 'local', model: model.id,
-    modelLabel: model.label, responseSource: official ? 'gateway-identity' : 'model'}) :
+  return reply ? json({reply, route: 'local', model: model.id,
+    modelLabel: model.label, responseSource: 'model'}) :
     error('O modelo não confirmou uma resposta. Confira a auditoria antes de repetir.', 502);
 }
 
