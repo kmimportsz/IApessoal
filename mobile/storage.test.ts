@@ -13,7 +13,7 @@ test('A migração 1.1 preserva v1.0, recupera envio e registra metadados de rev
       INSERT INTO outbox VALUES ('old','mensagem','local','https://example.test',99,'sending',NULL);
       INSERT INTO outbox VALUES ('done','mensagem','local','https://example.test',98,'done','resposta');
       INSERT INTO experiments(result) VALUES ('resultado');
-      INSERT INTO options VALUES ('search','2');
+      INSERT INTO options VALUES ('search','2'),('avatarChoice','Explorador'),('avatarPhoto','avatar-00000000-0000-4000-8000-000000000001.jpg'),('voiceRate','0.8');
       INSERT INTO audit(created,event) VALUES (90, 'enviado');
     `);
     const connection = {
@@ -30,7 +30,10 @@ test('A migração 1.1 preserva v1.0, recupera envio e registra metadados de rev
     assert.equal(sqlite.prepare("SELECT state FROM outbox WHERE id='old'").get()?.state, 'uncertain');
     assert.equal(sqlite.prepare("SELECT reply FROM outbox WHERE id='done'").get()?.reply, 'resposta');
     assert.equal(sqlite.prepare('SELECT result FROM experiments').get()?.result, 'resultado');
-    assert.equal(sqlite.prepare('SELECT value FROM options').get()?.value, '2');
+    assert.equal(sqlite.prepare("SELECT value FROM options WHERE key='search'").get()?.value, '2');
+    assert.equal(sqlite.prepare("SELECT value FROM options WHERE key='avatarChoice'").get()?.value, 'Explorador');
+    assert.equal(sqlite.prepare("SELECT value FROM options WHERE key='avatarPhoto'").get()?.value, 'avatar-00000000-0000-4000-8000-000000000001.jpg');
+    assert.equal(sqlite.prepare("SELECT value FROM options WHERE key='voiceRate'").get()?.value, '0.8');
     assert.equal(sqlite.prepare('SELECT event FROM audit').get()?.event, 'enviado');
     assert.equal(sqlite.prepare('SELECT body FROM memory').get()?.body, 'registro');
 
