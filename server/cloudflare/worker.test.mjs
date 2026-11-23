@@ -361,6 +361,12 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
   const status=await (await call('/github')).json();
   assert.equal(status.history[0].finding.excerpt,'export const label = input.value;');
   assert.equal(status.history[0].commit_sha,commit);
+  assert.deepEqual(status.history[0].summary,{files:[{path:'src/index.js',lines:1}],failedFiles:0,discoveryCount:1});
+  const oldId=crypto.randomUUID();
+  db.prepare("INSERT INTO github_runs_v15 VALUES (?,?,?,?,'reviewed',NULL)").run(oldId,12,commit,1);
+  const history=await (await call('/github/repository/12/history')).json();
+  assert.deepEqual(history.history.find(run=>run.id===oldId).summary,{files:null,failedFiles:null,discoveryCount:0});
+  assert.equal(inferences,1);
   assert.doesNotMatch(db.prepare('SELECT sealed FROM github_runs_v15').get().sealed,/Entrada|input.value/);
   await call('/github/finding',{id:status.history[0].finding_id,state:'resolved'});
   assert.equal((await (await call('/github')).json()).history[0].finding_state,'resolved');
@@ -388,6 +394,11 @@ test('GitHub exige autorização, verifica webhook e analisa arquivo real do tra
   assert.equal(inferences,1);
   await call('/github/repository',{id:12,state:'disconnected'});
   assert.equal((await (await call('/github')).json()).history.length,0);
+  await call('/github/repository',{id:12,state:'active'});
+  env.AI.run=async()=>({response:{finding:null}});
+  await worker.scheduled({},env);
+  const noFinding=(await (await call('/github/repository/12/history')).json()).history.find(run=>run.id!==oldId&&run.state==='reviewed');
+  assert.deepEqual(noFinding.summary,{files:[{path:'src/index.js',lines:1}],failedFiles:0,discoveryCount:0});
 });
 
 test('Uma descoberta jamais pode citar arquivo ou linha ausente do material',async ()=>{

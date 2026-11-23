@@ -248,10 +248,16 @@ async function githubHistory(env,installation,repository) {
       WHERE p.state!='disconnected' AND i.installation=? AND i.availability!='removed' AND (? IS NULL OR r.repo=?)
       ORDER BY r.created DESC LIMIT 25`).bind(installation,repository,repository).all()).results;
   return Promise.all(runs.map(async ({sealed,...r})=>{
-      if(!sealed) return r;
-      try {return {...r,finding:JSON.parse(await unseal(sealed,env.RECOVERY_KEY,'github:'+r.id))};}
-      catch {return {...r,state:'unavailable'};}
-    }));
+    const completed=['reviewed','finding','duplicate'].includes(r.state);
+    if(!completed) return r.state==='running' && Date.now()-r.created>=5*60_000 ? {...r,state:'incomplete'} : r;
+    const summary={files:null,failedFiles:null,discoveryCount:r.state==='reviewed'?0:1};
+    if(!sealed) return r.state==='finding'?{...r,state:'unavailable'}:{...r,summary};
+    try {
+      const result=JSON.parse(await unseal(sealed,env.RECOVERY_KEY,'github:'+r.id));
+      if(result.version===1) return {...r,summary:{...summary,files:result.files,failedFiles:result.failedFiles},finding:result.finding};
+      return {...r,summary,finding:result};
+    } catch {return {...r,state:'unavailable'};}
+  }));
 }
 
 export async function githubRoute({env,path,method,read,now}) {
@@ -337,6 +343,7 @@ async function collect(repo, token) {
     ...(tree.tree??[]).filter(f=>f.type==='blob').map(f=>f.path)];
   const selected=[...new Set(candidates.filter(eligiblePath))].slice(0,4);
   const files=[];
+  let failedFiles=0;
   for(const file of selected) {
     try {
       const blob=await github(path+'/contents/'+file.split('/').map(encodeURIComponent).join('/')+'?ref='+sha,token,undefined,48_000);
@@ -349,19 +356,22 @@ async function collect(repo, token) {
         remaining-=line.length+1;if(remaining<0)break; lines.push(line);
       }
       if(lines.length) files.push({path:file,lines});
-    } catch { /* A file may be too large or a symlink. */ }
+    } catch { failedFiles++; }
   }
   let discussion=[];
   try {
     const issues=await github(path+'/issues?state=open&per_page=5',token,undefined,95_000);
     discussion=issues.map(i=>({number:i.number,title:String(i.title??'').slice(0,160),kind:i.pull_request?'PR':'issue'}));
   } catch { /* File evidence stays usable. */ }
-  return {sha,files,discussion,changed:changed.length};
+  return {sha,files,failedFiles,discussion,changed:changed.length};
 }
+
+class IncompleteReview extends Error {}
 
 export function evidence(result,files) {
   const choice=result?.choices?.[0];
-  if (choice?.finish_reason && choice.finish_reason!=='stop') throw Error('Resposta incompleta');
+  const finish=choice?.finish_reason??result?.finish_reason;
+  if(finish && finish!=='stop') throw new IncompleteReview('Resposta incompleta');
   const raw=choice?.message?.content??result?.response;
   const item=typeof raw==='string'?JSON.parse(raw.trim().replace(/^\x60\x60\x60(?:json)?\s*/i,'').replace(/\s*\x60\x60\x60$/,'')):raw;
   if (!item || typeof item!=='object') throw Error('Resposta inválida');
@@ -409,9 +419,9 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
     sha=data.sha;
     if (!data.files.length) {
       if(sha!==repo.head || repo.dirty) await env.DB.batch([
-        env.DB.prepare(`INSERT INTO github_runs_v15 SELECT ?,?, ?,?,'no_files',NULL WHERE EXISTS
-          (SELECT 1 FROM github_repos_v15 WHERE ${current})`).bind(id,repo.id,sha,now,...args),
-        complete(sha,dayMs),
+        env.DB.prepare(`INSERT INTO github_runs_v15 SELECT ?,?,?,?,?,NULL WHERE EXISTS
+          (SELECT 1 FROM github_repos_v15 WHERE ${current})`).bind(id,repo.id,sha,now,data.failedFiles?'incomplete':'no_files',...args),
+        data.failedFiles?complete(null,6*hour,1):complete(sha,dayMs),
       ]);
       else await complete(sha,dayMs).run();
       return;
@@ -458,23 +468,32 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
       write.push(env.DB.prepare(`INSERT OR IGNORE INTO github_findings_v15 SELECT ?,?,?,?,'new'
         WHERE EXISTS(SELECT 1 FROM github_repos_v15 WHERE ${current})`).bind(id,id,repo.id,fingerprint,...args));
     }
+    const details={
+      version:1,
+      files:data.files.map(file=>({path:file.path,lines:file.lines.length})),
+      failedFiles:data.failedFiles,
+    };
+    const sealed=await seal(JSON.stringify(details),env.RECOVERY_KEY,'github:'+id);
+    const sealedWithFinding=finding?await seal(JSON.stringify({...details,finding}),env.RECOVERY_KEY,'github:'+id):null;
     write.push(env.DB.prepare(`UPDATE github_runs_v15 SET state=CASE
       WHEN NOT EXISTS(SELECT 1 FROM github_repos_v15 WHERE ${current}) THEN 'revoked'
       WHEN EXISTS(SELECT 1 FROM github_findings_v15 WHERE id=?) THEN 'finding'
       WHEN ?=1 THEN 'duplicate' ELSE 'reviewed' END,
-      sealed=CASE WHEN EXISTS(SELECT 1 FROM github_findings_v15 WHERE id=?) THEN ? ELSE NULL END WHERE id=?`)
-      .bind(...args,id,Number(!!finding),id,finding?await seal(JSON.stringify(finding),env.RECOVERY_KEY,'github:'+id):null,id));
+      sealed=CASE WHEN NOT EXISTS(SELECT 1 FROM github_repos_v15 WHERE ${current}) THEN NULL
+      WHEN EXISTS(SELECT 1 FROM github_findings_v15 WHERE id=?) THEN ? ELSE ? END WHERE id=?`)
+      .bind(...args,id,Number(!!finding),...args,id,sealedWithFinding,sealed,id));
     write.push(complete(sha,dayMs));
     await env.DB.batch(write);
     success=true;
     if(finding?.priority==='alta' && await env.DB.prepare("SELECT 1 FROM github_findings_v15 f JOIN github_repos_v15 p ON p.id=f.repo WHERE f.id=? AND p.state='active'").bind(id).first()){
       try {await notify(env,id,new Date());} catch { /* The app still shows the finding. */ }
     }
-  } catch {
+  } catch (error) {
+    const state=error instanceof IncompleteReview?'incomplete':'failed';
     await env.DB.batch([
-      env.DB.prepare(`INSERT OR IGNORE INTO github_runs_v15 SELECT ?,?,?,?,'failed',NULL WHERE EXISTS(
-        SELECT 1 FROM github_repos_v15 WHERE ${current})`).bind(id,repo.id,sha??repo.head??'',now,...args),
-      env.DB.prepare("UPDATE github_runs_v15 SET state='failed' WHERE id=? AND state='running'").bind(id),
+      env.DB.prepare(`INSERT OR IGNORE INTO github_runs_v15 SELECT ?,?,?,?,?,NULL WHERE EXISTS(
+        SELECT 1 FROM github_repos_v15 WHERE ${current})`).bind(id,repo.id,sha??repo.head??'',now,state,...args),
+      env.DB.prepare("UPDATE github_runs_v15 SET state=? WHERE id=? AND state='running'").bind(state,id),
       complete(null,6*hour,1),
     ]);
   } finally {

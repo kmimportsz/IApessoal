@@ -27,7 +27,8 @@ type Tab = typeof tabs[number];
 type Thread = {id:string;title:string;archived:number};
 type GitHubRepo = {id:number;name:string;description:string;state?:'active'|'paused'|'disconnected';head?:string;checked?:number;due?:number;analyzed?:number;availability:'available'|'archived'|'removed';private?:number};
 type GitHubFinding = {path:string;line:number;excerpt:string;problem:string;impact:string;suggestion:string;priority:string;confidence:string};
-type GitHubRun = {id:string;repo:number;commit_sha:string;created:number;state:string;finding_id?:string;finding_state?:string;finding?:GitHubFinding};
+type GitHubRun = {id:string;repo:number;commit_sha:string;created:number;state:string;finding_id?:string;finding_state?:string;finding?:GitHubFinding;
+  summary?:{files:{path:string;lines:number}[]|null;failedFiles:number|null;discoveryCount:number}};
 type GitHubStatus = {configured:boolean;repos:GitHubRepo[];history:GitHubRun[];slug?:string;
   account?:{state:'active'|'paused'|'disconnected';lastSync:number|null;syncError:boolean}};
 type Analysis = {run_id:string;project_id:string;cycle:number;title:string;created:number;state:string;summary?:string;action?:string};
@@ -792,6 +793,31 @@ function PersonalApp() {
     go('Conversa');
   }
 
+  function analysisCard(run: GitHubRun, repo: GitHubRepo) {
+    const summary=run.summary;
+    const status=({running:'Em análise',reviewed:'Análise concluída',finding:'Análise concluída',
+      duplicate:'Análise concluída',failed:'Erro na análise',incomplete:'Análise incompleta',
+      no_files:'Análise incompleta · Sem arquivos elegíveis',quota:'Análise não executada · Aguardando cota',
+      revoked:'Análise não disponibilizada · Permissão alterada',unavailable:'Resultado indisponível'} as Record<string,string>)[run.state]??run.state;
+    return <View key={run.id} style={s.card}>
+      <Text style={s.label}>{status}</Text>
+      <Text style={s.muted}>{formatDate(run.created)}</Text>
+      <Text selectable style={s.muted}>Commit {run.commit_sha || 'indisponível'}</Text>
+      {summary && <>
+        <Text style={s.label}>Descobertas identificadas: {summary.discoveryCount}</Text>
+        <Text style={s.text}>{run.state==='reviewed'?'Nenhuma descoberta relevante nesta análise':
+          run.state==='duplicate'?'A análise reencontrou uma descoberta já registrada.':'A análise identificou uma descoberta relevante.'}</Text>
+        {summary.files ? <>
+          <Text style={s.label}>Arquivos examinados ({summary.files.length})</Text>
+          {summary.files.map(file=><Text key={file.path} selectable style={s.muted}>{file.path} · linhas 1–{file.lines}</Text>)}
+          {!!summary.failedFiles && <Text style={s.muted}>{summary.failedFiles} arquivo(s) não puderam ser obtidos.</Text>}
+          <Text style={s.muted}>A conclusão vale para os trechos examinados.</Text>
+        </> : <Text style={s.muted}>A lista de arquivos examinados não foi armazenada nesta análise antiga.</Text>}
+      </>}
+      {run.finding && findingCard(run,repo)}
+    </View>;
+  }
+
   function findingCard(run: GitHubRun, repo: GitHubRepo) {
     const f=run.finding;
     if(!f)return null;
@@ -1192,10 +1218,10 @@ function PersonalApp() {
             {repo.availability!=='removed' && repo.state!=='disconnected' &&
               <Button label={githubHistory?.repo===repo.id?'Fechar histórico':'Ver histórico'}
                 onPress={()=>githubHistory?.repo===repo.id?setGithubHistory(undefined):void perform(()=>loadGithubHistory(repo.id))}/>}
-            {repo.availability!=='removed' && githubHistory?.repo===repo.id && githubHistory.runs.map(run=>run.finding?findingCard(run,repo):
-              <Text key={run.id} style={s.muted}>{formatDate(run.created)} · {run.commit_sha.slice(0,12)} ·
-                {' '}{({running:'Em análise',reviewed:'Analisado',failed:'Falhou',no_files:'Sem arquivos elegíveis',duplicate:'Descoberta já registrada',
-                  quota:'Aguardando cota',revoked:'Permissão alterada',unavailable:'Resultado indisponível'} as Record<string,string>)[run.state]??run.state}</Text>)}
+            {repo.availability!=='removed' && githubHistory?.repo===repo.id && (
+              githubHistory.runs.length ? githubHistory.runs.map(run=>analysisCard(run,repo)) :
+                <Text style={s.muted}>Nenhuma análise registrada para este repositório.</Text>
+            )}
           </View>)}
         </View>}
         {!!automation?.entries.length && <View style={s.card}><Text style={s.section}>Análises agendadas</Text>
