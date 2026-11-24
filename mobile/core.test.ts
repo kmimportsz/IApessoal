@@ -89,3 +89,14 @@ test('Backup integrado preserva histórico e filtra opções secretas',async()=>
   assert.deepEqual(result.options,{profileName:'Nome'});
   assert.equal(result.threads[0].id,'principal');
 });
+
+test('Aprendizado só propõe declarações explícitas do usuário, nunca grava ou autoriza',async()=>{
+ const {learningCandidate}=await import('./core.ts');
+ assert.deepEqual(learningCandidate('Aprendi que devo validar o estoque antes de publicar.'),{kind:'Aprendizado',body:'Aprendi que devo validar o estoque antes de publicar.'});
+ assert.equal(learningCandidate('Decidi que o catálogo Aurora continuará azul.')?.kind,'Decisão');
+ assert.equal(learningCandidate('Meu objetivo é reduzir o retrabalho.')?.kind,'Objetivo');
+ assert.equal(learningCandidate('O erro foi publicar sem teste.')?.kind,'Erro e solução');
+ assert.equal(learningCandidate('Aprendi que minha senha é exemplo.'),undefined);
+ assert.equal(learningCandidate('Decidi que meu token é secreto.'),undefined);
+ assert.equal(learningCandidate('A IA disse que aprendi que isso funciona.'),undefined);
+});
