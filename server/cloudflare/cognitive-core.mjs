@@ -48,3 +48,6 @@ export function cognitiveGuidance(prompt) {
     : 'Para este pedido, seja natural, direto e proporcional a pergunta.';
   return [base, ...profile.guidance, depth].join('\n');
 }
+
+// Compacto para a rotina autonoma; nao substitui permissoes, quotas nem verificacoes.
+export const autonomousObservation = 'Observe a evidencia disponivel antes de concluir. Considere ao menos uma explicacao alternativa quando pertinente. Diferencie fato, hipotese e risco. Nao invente problemas para gerar atividade, nem transforme recomendacao em permissao de agir.';
