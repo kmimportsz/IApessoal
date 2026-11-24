@@ -26,13 +26,24 @@ export function saveProfile(list:ProjectProfile[],p:ProjectProfile):ProjectProfi
   if(result.length>30)throw Error('Limite de 30 projetos.');
   return result;
 }
-export function buildPrompt(p:ProjectProfile,request:string):string{
+export type FactoryMode='new'|'change';
+export type FactoryDraft={profile:ProjectProfile;request:string;mode:FactoryMode};
+export type FactorySession={selected?:string;drafts:Record<string,FactoryDraft>};
+export function mergeProfiles(existing:ProjectProfile[],incoming:ProjectProfile[]):ProjectProfile[]{
+  let result=[...existing];
+  for(const p of incoming)if(!result.some(x=>x.id===p.id))result=saveProfile(result,p);
+  return result;
+}
+export function buildPrompt(p:ProjectProfile,request:string,mode:FactoryMode='new'):string{
   if(!validateProfile(p))throw Error('Preencha o perfil do projeto.');
   if(!request.trim()||request.length>2000)throw Error('Descreva o pedido em até 2.000 caracteres.');
   const field=(s:string)=>s.trim()||'Não definido: preserve o existente e explicite qualquer suposição.';
   return [
     '# NEXUS FACTORY | Briefing reutilizável', 'Projeto: '+p.name.trim(),
     'Objetivo do projeto: '+p.purpose.trim(),'Pedido atual: '+request.trim(),
+    'Modo: '+(mode==='change'?'Laboratório de alterações, versão principal protegida':'Criação de projeto'),
+    ...(mode==='change'?['Inspecione o estado atual e estabeleça uma linha de base. Crie branch/worktree isolada a partir do SHA confirmado; não altere a branch principal, banco de produção ou publicação atual. Teste regressões, compare antes/depois e entregue prévia separada com plano de rollback. Integração somente depois de aprovação explícita.']:['Expanda o pedido mínimo em requisitos, arquitetura, fluxo, dados, segurança, interface provisória, implementação, testes e entrega. Complete detalhes operacionais razoáveis; não trate suposições como decisões do fundador.']),
+    'Design, layout e briefing finais são decisões do fundador. Apresente a proposta visual e mantenha a publicação final bloqueada até aprovação explícita.',
     '## Identidade visual (cores, tipografia, layout, referências)',field(p.visual),
     '## Preferências de experiência e tecnologia',field(p.preferences),
     '## Restrições específicas',field(p.constraints),
