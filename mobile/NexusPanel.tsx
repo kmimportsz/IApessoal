@@ -2,6 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {Alert,Linking,Pressable,Share,StyleSheet,Text,TextInput,View} from 'react-native';
 import {randomUUID} from 'expo-crypto';
 import {palette} from './visual';
+import {canReview,reviewCycle,nextAction,deliverySummary} from './nexus-operations';
 
 type Mission={id:string;repository:string;status:string;revision:string|null;iteration:number;brief:{maxIterations:number;objective:string;baseRef:string;branch:string;constraints?:string[];nonGoals?:string[];criteria:{id:string;description:string;expectedEvidence?:string}[]}};
 type Detail={mission:Mission;version:number;
@@ -60,15 +61,26 @@ export function NexusPanel({request,onNavigate}:{request:(path:string,data?:unkn
     setDetail(latest);setIncomplete(false);setConfirmed(false);
     updateMissionInList(latest.mission);
   }
-  async function event(type:string,value?:unknown) {
-    if(!detail||incomplete)return;
-    const result: Pick<Detail,'mission'|'version'>=await api('/nexus/missions/'+detail.mission.id+'/events',
-      {id:randomUUID(),type,version:detail.version,payload:value});
+  async function commitEvent(cursor:Pick<Detail,'mission'|'version'>,type:string,value?:unknown) {
+    const result: Pick<Detail,'mission'|'version'>=await api('/nexus/missions/'+cursor.mission.id+'/events',
+      {id:randomUUID(),type,version:cursor.version,payload:value});
     updateMissionInList(result.mission);
     // A successful POST is authoritative even if refreshing the full report fails.
     setDetail(previous=>previous?{...previous,mission:result.mission,version:result.version}:previous);
     setConfirmed(true);setIncomplete(true);
+    return result;
+  }
+  async function event(type:string,value?:unknown) {
+    if(!detail||incomplete)return;
+    await commitEvent(detail,type,value);
     await open(detail.mission.id);
+  }
+  async function autoReview(){
+    if(!detail||incomplete||!canReview(detail.mission.status,detail.execution?.prUrl))return;
+    const cursor:Pick<Detail,'mission'|'version'>={mission:detail.mission,version:detail.version};
+    await reviewCycle(cursor,(current,type)=>commitEvent(current,type));
+    await open(cursor.mission.id);
+    setNotice('Verificação concluída. Consulte as evidências e a próxima ação.');
   }
   function select(id:string){
     if(flight.current)return;
@@ -122,6 +134,11 @@ export function NexusPanel({request,onNavigate}:{request:(path:string,data?:unkn
     {!selectedId ? <>
       <Text style={s.muted}>Acompanhe suas entregas em um só lugar. A revisão é independente; o início do Codex ainda é manual.</Text>
       {button('Atualizar missões',()=>void run(loadList))}
+      {missions&&<View style={s.summary}>
+        <Text style={s.title}>Central de entregas</Text>
+        <Text style={s.muted}>{deliverySummary(missions).total} missões · {deliverySummary(missions).working} em andamento · {deliverySummary(missions).pending} com pendências</Text>
+        <Text style={s.muted}>{deliverySummary(missions).decisions} aguardando sua decisão · {deliverySummary(missions).approved} aprovadas</Text>
+      </View>}
       {missions?.length===0&&<Text style={s.muted}>Nenhuma missão disponível.</Text>}
       {missions?.map(m=><Pressable key={m.id} accessibilityRole="button" accessibilityLabel={m.repository+' · '+labelStatus(m.status)} disabled={busy} style={s.missionCard} onPress={()=>select(m.id)}>
         <Text style={s.title}>{m.repository}</Text>
@@ -158,6 +175,14 @@ export function NexusPanel({request,onNavigate}:{request:(path:string,data?:unkn
         {detail.execution?.result&&<Text style={s.status}>Testes: {detail.execution.result.ci==='passed'?'aprovados':detail.execution.result.ci==='failed'?'falharam':'aguardando confirmação'}</Text>}
       </View>}
       {!incomplete&&<>
+      <View style={s.summary}>
+        <Text style={s.title}>Próxima ação</Text>
+        <Text style={s.muted}>{nextAction(detail.mission.status,detail.execution?.prUrl)}</Text>
+        {detail.execution?.prUrl&&evidenceLink({text:'Abrir entrega no GitHub',url:detail.execution.prUrl})}
+        {detail.execution?.prUrl&&evidenceLink({text:'Consultar testes da entrega',url:detail.execution.prUrl+'/checks'})}
+        {canReview(detail.mission.status,detail.execution?.prUrl)&&button('AutoPilot · conferir e auditar',()=>void run(autoReview))}
+        <Text style={s.muted}>Verifica o PR e executa a auditoria determinística. Não inicia Codex, usa inferência paga, aprova ou publica.</Text>
+      </View>
       <Text style={s.title}>O que falta</Text>
       {detail.review.gate.blockers.length?detail.review.gate.blockers.map(item=><Text key={item.axis+item.reason} style={s.muted}>{axisLabel(item.axis)}: {item.reason==='Evidencia verificada ausente'?'evidência pendente':item.reason==='Aprovacao do proprietario necessaria'?'aguardando sua decisão':item.reason}</Text>):<Text style={s.muted}>Nenhum bloqueio registrado.</Text>}
       {state==='IDEA'&&button('Confirmar especificação',()=>void run(()=>event('spec_ready')))}
