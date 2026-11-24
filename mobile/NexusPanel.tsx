@@ -5,7 +5,7 @@ import {palette} from './visual';
 
 type Mission={id:string;repository:string;status:string;revision:string|null;iteration:number;brief:{maxIterations:number;objective:string;baseRef:string;branch:string;constraints?:string[];nonGoals?:string[];criteria:{id:string;description:string;expectedEvidence?:string}[]}};
 type Detail={mission:Mission;version:number;
-  execution?:{mode:'web'|'cli';issueUrl:string;prUrl:string|null;result:{commit:string;ci:string}|null};events:{id:string;type:string;status:string;at:number;reason?:string}[];
+  execution?:{mode:'web'|'cli';issueUrl:string;prUrl:string|null;result:{commit:string;ci:string}|null;codex?:{state:string;commit?:string;url?:string;findings?:boolean;unresolved?:boolean}};events:{id:string;type:string;status:string;at:number;reason?:string}[];
   review:{gate:{blockers:{axis:string;reason:string}[]};status:string;correctionPackage?:{requests:{location:string;why:string;expected:string;test:string;url:string}[]};
     director?:{commit:string;verified:{text:string;url:string}[];hypotheses:{text:string}[];limits:string[];
       requests:{location:string;why:string;test:string}[];model?:{state:string;neurons?:number;observations?:{path:string;line:number;problem:string;verification:string}[]}}}};
@@ -148,7 +148,8 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
       {!incomplete&&<View style={s.summary}>
         <Text style={s.title}>Etapas da entrega</Text>
         <Text style={s.muted}>1. ChatGPT · {detail.events.some(item=>item.type==='spec_ready')?'Especificação registrada':'Planejamento não confirmado'}</Text>
-        <Text style={s.muted}>2. Codex · {detail.execution?.result?'PR observado; autoria não verificada':'Execução ainda não confirmada'}</Text>
+        <Text style={s.muted}>2. Codex · {detail.execution?.codex?.state==='completed'&&detail.execution.codex.commit===detail.mission.revision?(detail.execution.codex.unresolved?'Revisão concluída, apontamentos pendentes':'Revisão concluída'):detail.execution?.codex?.state==='running'&&detail.execution.codex.commit===detail.mission.revision?'Revisão em andamento':detail.execution?.result?'PR observado; revisão não confirmada':'Execução ainda não confirmada'}</Text>
+        {detail.execution?.codex?.url&&detail.execution.codex.commit===detail.mission.revision&&evidenceLink({text:'Ver revisão do Codex',url:detail.execution.codex.url})}
         <Text style={s.muted}>3. Diretora · {detail.review.director?'Relatório disponível':'Revisão pendente'}</Text>
         <Text style={s.muted}>4. Você · {state==='OWNER_APPROVED'||state==='RELEASED'?'Aprovação registrada':'Aprovação pendente'}</Text>
         <Text style={s.muted}>Ciclo {detail.mission.iteration} de {detail.mission.brief.maxIterations}</Text>
