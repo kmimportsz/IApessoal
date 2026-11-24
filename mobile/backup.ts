@@ -1,6 +1,7 @@
 import { AESEncryptionKey, AESSealedData, aesDecryptAsync, aesEncryptAsync, randomUUID } from 'expo-crypto';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { memoryKey, validateMemoryBackup, type Memory } from './core';
+import {decodeProfiles,mergeProfiles} from './factory';
 import { exportOptions, validateWorkspace, type Backup } from './backup-format';
 
 export async function exportWorkspace(db:SQLiteDatabase, cloud:unknown) {
@@ -11,7 +12,10 @@ export async function exportWorkspace(db:SQLiteDatabase, cloud:unknown) {
     db.getAllAsync<{key:string;value:string}>('SELECT key,value FROM options'),
   ]);
   const options=Object.fromEntries(prefs.filter(r=>exportOptions.includes(r.key as typeof exportOptions[number])).map(r=>[r.key,r.value]));
-  const data=validateWorkspace({version:2,memories,threads,messages,options,cloud},validateMemoryBackup);
+  await db.execAsync('CREATE TABLE IF NOT EXISTS nexus_factory_profiles_v1 (id INTEGER PRIMARY KEY CHECK(id=1), record TEXT NOT NULL)');
+  const factory=await db.getFirstAsync<{record:string}>('SELECT record FROM nexus_factory_profiles_v1 WHERE id=1');
+  const factoryProfiles=decodeProfiles(factory?.record??null);
+  const data=validateWorkspace({version:2,memories,threads,messages,options,cloud,factoryProfiles},validateMemoryBackup);
   const bytes=new TextEncoder().encode(JSON.stringify(data));
   if(bytes.length>1_350_000) throw Error('O backup excede 1,35 MB. Nenhum registro foi descartado.');
   const key=await AESEncryptionKey.generate(256);
@@ -47,6 +51,13 @@ export async function importWorkspace(db:SQLiteDatabase,data:Backup) {
         INSERT OR IGNORE INTO outbox(id,thread_id,prompt,route,url,created,state,reply,reply_at,response_model)
         VALUES (?,?,?,'local','',?,?,?,?,?)
       `,row.id,row.thread_id,row.prompt,row.created,row.reply?'done':'rejected',row.reply,row.reply_at,row.response_model)).changes;
+    }
+    if(data.factoryProfiles!==undefined){
+      await tx.execAsync('CREATE TABLE IF NOT EXISTS nexus_factory_profiles_v1 (id INTEGER PRIMARY KEY CHECK(id=1), record TEXT NOT NULL)');
+      const row=await tx.getFirstAsync<{record:string}>('SELECT record FROM nexus_factory_profiles_v1 WHERE id=1');
+      const existing=decodeProfiles(row?.record??null);
+      const merged=mergeProfiles(existing,data.factoryProfiles);
+      await tx.runAsync('INSERT INTO nexus_factory_profiles_v1 (id,record) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',JSON.stringify(merged));
     }
     for(const [k,v] of Object.entries(data.options))await tx.runAsync('INSERT OR IGNORE INTO options VALUES (?,?)',k,v);
   });
