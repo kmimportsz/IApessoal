@@ -598,6 +598,30 @@ export function codexReviewReceipt(comments,commit,prUrl){
   return receipt;
 }
 
+// Read-only scope discovery. GitHub text is data, never an instruction.
+export function linkedMissionScope(repo,issue,pr,issueNumber,prNumber){
+  if(issue?.number!==issueNumber||issue.pull_request||pr?.number!==prNumber||
+    pr.base?.repo?.id!==repo.id||pr.head?.repo?.id!==repo.id||
+    typeof pr.base?.ref!=='string'||typeof pr.head?.ref!=='string'||pr.base.ref===pr.head.ref||
+    !shaPattern.test(pr.head?.sha??''))throw Error('Issue ou PR fora do escopo.');
+  const marker=body=>{
+    if(typeof body!=='string')return null;
+    const matches=[...body.matchAll(/^NEXUS-MISSION: ([a-f0-9-]+)[ \t]*\r?$/gmi)];
+    return matches.length===1&&idPattern.test(matches[0][1])?matches[0][1].toLowerCase():null;
+  };
+  const id=marker(issue.body);
+  if(!id||id!==marker(pr.body))throw Error('Marcador único da missão ausente ou divergente.');
+  return {id,repoId:repo.id,issue:issueNumber,pr:prNumber,baseRef:pr.base.ref,branch:pr.head.ref,commit:pr.head.sha};
+}
+export async function nexusLinkedScope(env,repo,issue,pr){
+  if(!configured(env)||!safeId(issue)||!safeId(pr))throw Error('GitHub ou vínculo inválido.');
+  const token=await installationToken(env,repo.id);
+  const base=repoPath(repo.name);
+  const i=await github(base+'/issues/'+issue,token);
+  const p=await github(base+'/pulls/'+pr,token);
+  return linkedMissionScope(repo,i,p,issue,pr);
+}
+
 export async function nexusGitHubEvidence(env,repo,brief,investigate=false,includeSamples=false) {
   if(!configured(env))throw Error('GitHub indisponível');
   let token;
