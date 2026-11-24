@@ -49,8 +49,11 @@ export function NexusPanel({request,onNavigate,repos=[],handoff,onHandoffConsume
   const [ux,setUx]=useState<string[]>([]);
   const [busy,setBusy]=useState(false);
   const [notice,setNotice]=useState('');
+  const consumedHandoff=useRef<FactoryHandoff|undefined>(undefined);
   useEffect(()=>{
-    if(!handoff||busy||flight.current)return;
+    if(!handoff){consumedHandoff.current=undefined;return;}
+    if(busy||flight.current||consumedHandoff.current===handoff)return;
+    consumedHandoff.current=handoff;
     setSelectedId(undefined);setDetail(undefined);setIncomplete(false);setConfirmed(false);setForm(undefined);
     setImporting(false);setPrepared(undefined);setLinkedRepo(undefined);setLinking(true);setShowProjectBrief(false);
     setLinkedFields({issue:'',pr:'',objective:handoff.objective,checks:'',criterion:'',proof:''});
