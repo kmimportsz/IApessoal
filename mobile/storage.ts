@@ -32,6 +32,14 @@ export const historySchema = `
     CREATE TABLE IF NOT EXISTS memory_auto_grants(id TEXT PRIMARY KEY, version INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
     INSERT OR IGNORE INTO conversations(id,title) VALUES ('principal','Histórico principal');
+    CREATE TABLE IF NOT EXISTS memory_auto_scoped_grants(
+      id TEXT NOT NULL, thread_id TEXT NOT NULL, version INTEGER NOT NULL,
+      PRIMARY KEY(id,thread_id)
+    );
+    CREATE TRIGGER IF NOT EXISTS revoke_scoped_memory_delete AFTER DELETE ON memory
+      BEGIN DELETE FROM memory_auto_scoped_grants WHERE id=OLD.id; END;
+    CREATE TRIGGER IF NOT EXISTS revoke_scoped_thread_delete AFTER DELETE ON conversations
+      BEGIN DELETE FROM memory_auto_scoped_grants WHERE thread_id=OLD.id; END;
     CREATE TABLE IF NOT EXISTS memory_history(
       memory_id TEXT NOT NULL, version INTEGER NOT NULL, changed INTEGER NOT NULL,
       PRIMARY KEY(memory_id, version)
