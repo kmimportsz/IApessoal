@@ -3,11 +3,26 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdtemp } from 'node:fs/promises';
 import { spawn, execFileSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
+import { verifyExecutorPermissions } from './nexus-preflight.mjs';
 
 const [file, authorization, rootArg='.', receiptsArg='/tmp', gateway]=process.argv.slice(2);
-if(!file||!authorization)throw Error('Uso: node scripts/nexus-codex.mjs pacote.json SHA256_AUTORIZADO [repositorio] [diretorio-recibos]');
-const root=resolve(rootArg);
-const receipts=resolve(receiptsArg);
+const checkOnly=file==='--check';
+if(!checkOnly && (!file||!authorization))
+  throw Error('Uso: node scripts/nexus-codex.mjs pacote.json SHA256_AUTORIZADO [repositorio] [diretorio-recibos]');
+const root=resolve(checkOnly?authorization??'.':rootArg);
+const receipts=resolve(checkOnly?process.argv[4]??'/tmp':receiptsArg);
+const git=(...args)=>execFileSync('git',['-c','core.hooksPath=/dev/null',...args],{cwd:root,encoding:'utf8'}).trim();
+const preflight=()=>verifyExecutorPermissions({
+  codexHome:resolve(process.env.CODEX_HOME||join(homedir(),'.codex')),
+  gitDirectory:git('rev-parse','--path-format=absolute','--git-common-dir'),
+  receipts,
+});
+if(checkOnly){
+  await preflight();
+  console.log('Permissões de gravação verificadas. Nenhuma sessão do Codex foi iniciada.');
+  process.exit(0);
+}
 let raw;
 if(gateway){
   if(!/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(file))throw Error('Informe o UUID da missão.');
@@ -29,7 +44,6 @@ if(raw.length>24_000)throw Error('Pacote excede o limite.');
 const digest=createHash('sha256').update(raw).digest('hex');
 if(!/^[a-f0-9]{64}$/.test(authorization)||digest!==authorization)throw Error('O hash não corresponde ao pacote autorizado.');
 const packet=JSON.parse(raw);
-const git=(...args)=>execFileSync('git',['-c','core.hooksPath=/dev/null',...args],{cwd:root,encoding:'utf8'}).trim();
 const githubRepo=git('remote','get-url','origin').match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?$/)?.[1];
 const safeText=value=>typeof value==='string'&&value.length>0&&value.length<=700&&!/[\x00]|-----BEGIN |\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA)[a-z\d_]+/i.test(value);
 if(packet?.schema!==1||packet.kind!=='nexus.revision_request'||packet.delivery!=='manual'||
@@ -41,6 +55,7 @@ if(packet?.schema!==1||packet.kind!=='nexus.revision_request'||packet.delivery!=
   throw Error('Pacote de revisão ou repositório fora do escopo.');
 if(git('rev-parse','--verify','refs/heads/'+packet.branch)!==packet.revision)
   throw Error('Sincronize a branch da missão com o SHA autorizado antes de executar.');
+await preflight();
 // Discard URLs and all unexpected fields; user-reviewed text is bounded input data.
 const requests=packet.requests.map(({location,why,expected,test})=>({location,why,expected,test}));
 const receipt=join(receipts,'nexus-'+digest+'.json');

@@ -26,3 +26,23 @@ test('Executor rejeita pacote não autorizado e SHA divergente antes de chamar o
   assert.notEqual(stale.status,0);
   assert.match(stale.stderr,/refs\/heads\/nexus|SHA autorizado/);
 });
+
+test('Pré-verificação testa gravação sem executar CLI ou alterar installation_id',async t=>{
+  const {mkdirSync,readFileSync,readdirSync}=await import('node:fs');
+  const {verifyExecutorPermissions}=await import('../../scripts/nexus-preflight.mjs');
+  const root=mkdtempSync(join(tmpdir(),'nexus-preflight-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const dirs={codexHome:join(root,'state'),gitDirectory:join(root,'git'),receipts:join(root,'receipts')};
+  for(const dir of Object.values(dirs))mkdirSync(dir);
+  await verifyExecutorPermissions(dirs);
+  assert.deepEqual(readdirSync(dirs.codexHome),[]);
+  const installation=join(dirs.codexHome,'installation_id');
+  writeFileSync(installation,'identificador de teste');
+  await verifyExecutorPermissions(dirs);
+  assert.equal(readFileSync(installation,'utf8'),'identificador de teste');
+  await assert.rejects(verifyExecutorPermissions({...dirs,receipts:join(root,'ausente')}),/diretório privado/);
+  rmSync(installation);
+  mkdirSync(installation);
+  await assert.rejects(verifyExecutorPermissions(dirs),/installation_id/);
+  await assert.rejects(verifyExecutorPermissions({...dirs,codexHome:join(root,'ausente')}),/CODEX_HOME/);
+});

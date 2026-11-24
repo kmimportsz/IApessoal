@@ -69,3 +69,18 @@ A automação foi executada em um clone local separado com banco Git gravável, 
 O rastreamento de sistema localizou `EROFS` no estado interno do Codex. O parâmetro oficial `sqlite_home` permitiu criar o SQLite em uma pasta isolada gravável. A inicialização ainda tentou abrir `/home/agent/.codex/installation_id` com `O_RDWR|O_CREAT` e recebeu `EROFS`. O clone e a worktree não resolveram essa dependência do runtime. A autenticação existente continuou disponível, e as permissões foram preservadas.
 
 As evidências confirmam a chegada do pacote ao executor local e a tentativa real de inicialização. Ainda faltam um evento oficial `thread.started`, a edição pelo Codex, um novo SHA, a reavaliação e o retorno ao NEXUS. Esses passos exigem um executor já autorizado em que o diretório de estado do CLI seja gravável. Os testes de regressão não substituem essas evidências.
+
+### Preparar um executor autorizado
+
+Em um computador ou executor já autorizado, instale o Codex CLI oficial. Use uma conta do sistema com diretório pessoal gravável e um clone separado do repositório. Faça login diretamente nesse executor com sua conta autorizada:
+
+```sh
+codex login
+codex login status
+mkdir -m 700 ./nexus-recibos
+node scripts/nexus-codex.mjs --check . ./nexus-recibos
+```
+
+O modo `--check` confirma a gravação real no diretório de estado usado pelo CLI, nos metadados do Git e no diretório das worktrees e recibos. Se `installation_id` já existir, verifica se o arquivo pode ser aberto para gravação sem alterá-lo. O executor repete a verificação antes de iniciar a sessão. A pré-verificação não chama o CLI e não confirma autenticação. Faça o login no próprio executor e mantenha as credenciais do ambiente gerenciado no local original.
+
+Depois, use o pacote revisado e seu SHA-256 no comando do executor mostrado acima. Valide o evento real `thread.started` no recibo, execute os testes na worktree, revise o novo commit e confira o resultado da reavaliação no NEXUS. O teste completo depende de um executor compatível já disponível e autorizado.
