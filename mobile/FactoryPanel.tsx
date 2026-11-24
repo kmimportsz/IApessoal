@@ -4,7 +4,7 @@ import {randomUUID} from 'expo-crypto';
 import * as Clipboard from 'expo-clipboard';
 import type {SQLiteDatabase} from 'expo-sqlite';
 import {palette} from './visual';
-import {buildPrompt,decodeProfiles,emptyProfile,saveProfile,type ProjectProfile,type FactoryMode,type FactorySession} from './factory';
+import {buildPrompt,decodeProfiles,emptyProfile,saveProfile,designPalettes,validPalette,addLesson,type DesignPalette,type ProjectLesson,type ProjectProfile,type FactoryMode,type FactorySession} from './factory';
 
 const fields=[['name','Nome do projeto'],['purpose','Objetivo e público'],['visual','Cores, tipografia e identidade visual'],['preferences','Preferências de UX e tecnologia'],['constraints','Restrições e dados a preservar'],['criteria','Critérios de qualidade específicos']] as const;
 
@@ -76,6 +76,7 @@ export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySess
           <TextInput accessibilityLabel={label} value={profile[key]} editable={!busy} multiline={key!=='name'} maxLength={key==='name'?80:1600}
             style={s.input} onChangeText={value=>edit({...profile,[key]:value})}/>
         </View>)}
+        <CreativeTools key={profile.id} profile={profile} busy={busy} onChange={value=>edit(value)}/>
         {action('Salvar perfil do projeto',()=>void save(),busy)}
         {action('Preparar briefing',()=>void generate(),busy||!request.trim())}
         {prompt!==''&&<>
@@ -85,6 +86,41 @@ export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySess
         </>}
         <Text style={s.muted}>Perfis salvos apenas neste aparelho. Rascunhos sobrevivem à troca de aba durante a sessão, mas não ao encerramento do app. O briefing não inicia o Codex nem envia informações automaticamente. Registre a versão acordada no repositório.</Text>
       </>}
+    </>}
+  </View>;
+}
+function CreativeTools({profile,busy,onChange}:{profile:ProjectProfile;busy:boolean;onChange:(p:ProjectProfile)=>void}){
+  const [studio,setStudio]=useState(false);
+  const [knowledge,setKnowledge]=useState(false);
+  const [candidate,setCandidate]=useState<DesignPalette>(profile.design??designPalettes[0].palette);
+  const [lesson,setLesson]=useState<ProjectLesson>({observation:'',action:'',reference:''});
+  const [notice,setNotice]=useState('');
+  const control=(label:string,press:()=>void,disabled=busy)=><Pressable key={label} accessibilityRole="button" disabled={disabled} style={[s.button,disabled&&{opacity:.5}]} onPress={press}><Text style={s.link}>{label}</Text></Pressable>;
+  const input=(label:string,value:string,change:(v:string)=>void,max=240)=><TextInput accessibilityLabel={label} placeholder={label} placeholderTextColor={palette.muted} value={value} onChangeText={change} editable={!busy} maxLength={max} style={s.input}/>;
+  return <View style={s.card}>
+    {control(studio?'Fechar Design Studio':'Design Studio · avaliar identidade',()=>setStudio(!studio))}
+    {studio&&<>
+      <Text style={s.muted}>Propostas provisórias. Escolha uma paleta ou personalize as cores. A decisão final de layout é sua.</Text>
+      <View style={s.row}>{designPalettes.map(item=>control(item.name,()=>setCandidate({...item.palette})))}</View>
+      {([['background','Fundo'],['accent','Destaque'],['text','Texto']] as const).map(([key,label])=><View key={key}><Text style={s.muted}>{label} (#RRGGBB)</Text>{input(label,candidate[key],v=>setCandidate(p=>({...p,[key]:v})),7)}</View>)}
+      {validPalette(candidate)&&<View accessibilityLabel="Prévia ilustrativa de paleta" style={{backgroundColor:candidate.background,borderColor:candidate.accent,borderWidth:1,padding:16,borderRadius:12,gap:10}}>
+        <Text style={{color:candidate.text,fontSize:20,fontWeight:'700'}}>{profile.name||'Seu projeto'}</Text>
+        <Text style={{color:candidate.text}}>Exemplo de título, texto e destaque visual.</Text>
+        <View style={{backgroundColor:candidate.accent,padding:8,borderRadius:8}}><Text style={{color:candidate.background,fontWeight:'700'}}>Ação de exemplo</Text></View>
+      </View>}
+      {control('Selecionar proposta no briefing',()=>onChange({...profile,design:{...candidate}}),busy||!validPalette(candidate))}
+      {profile.design&&<Text style={s.muted}>Proposta selecionada: {profile.design.background} / {profile.design.accent} / {profile.design.text}. Salve o perfil para preservar.</Text>}
+      {profile.design&&control('Retirar proposta',()=>onChange({...profile,design:undefined}))}
+    </>}
+    {control(knowledge?'Fechar Knowledge Core':'Knowledge Core · lições do projeto',()=>setKnowledge(!knowledge))}
+    {knowledge&&<>
+      <Text style={s.muted}>Registre erros e soluções com fonte. As lições deste projeto entrarão nos próximos briefings; não são provas verificadas automaticamente.</Text>
+      {(profile.lessons??[]).map((item,i)=><View key={i} style={s.card}><Text style={s.muted}>{item.observation}</Text><Text style={s.muted}>Ação: {item.action}</Text><Text selectable style={s.muted}>{item.reference}</Text>{control('Retirar lição '+(i+1),()=>onChange({...profile,lessons:(profile.lessons??[]).filter((_,j)=>i!==j)}))}</View>)}
+      {input('O que aprendemos?',lesson.observation,v=>setLesson(p=>({...p,observation:v})))}
+      {input('Como evitar ou repetir?',lesson.action,v=>setLesson(p=>({...p,action:v})))}
+      {input('Referência HTTPS',lesson.reference,v=>setLesson(p=>({...p,reference:v})),300)}
+      {control('Adicionar lição ao perfil',()=>{try{onChange(addLesson(profile,lesson));setLesson({observation:'',action:'',reference:''});setNotice('Lição adicionada. Salve o perfil.');}catch(e){setNotice(e instanceof Error?e.message:'Não foi possível adicionar.');}},busy||(profile.lessons?.length??0)>=10)}
+      {!!notice&&<Text accessibilityLiveRegion="polite" style={s.muted}>{notice}</Text>}
     </>}
   </View>;
 }
