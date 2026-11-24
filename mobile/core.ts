@@ -59,10 +59,10 @@ export function preferenceCandidate(text: string): string | undefined {
 /** Learn only from an explicit first-person statement, as a private editable draft. */
 export function learningCandidate(text:string):{kind:Category;body:string}|undefined {
   const value=text.trim();
-  const preference=preferenceCandidate(value);
-  if(preference)return {kind:'Preferência',body:preference};
   if(value.length>240||/[\r\n@]|https?:|\b\d{5,}\b/i.test(value)||
     /\b(senha|cpf|token|credencial|cart[aã]o|segredo|endere[cç]o|telefone|sa[uú]de|chave privada)\b/iu.test(value))return;
+  const preference=preferenceCandidate(value);
+  if(preference)return {kind:'Preferência',body:preference};
   const match=/^(aprendi que|decidi que|meu objetivo [eé]|a li[cç][aã]o foi|o erro foi)\s+(.{8,200})$/iu.exec(value);
   if(!match)return;
   const prefix=normalize(match[1]);
