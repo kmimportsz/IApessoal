@@ -50,3 +50,13 @@ test('Apontamento Codex atual impede aprovação mesmo com evidências humanas e
  assert.equal(transition(ready,{type:'audit'},unresolved,3).status,'EVIDENCE_MISSING');
  assert.throws(()=>transition(ready,{type:'approve',payload:{commit:revision}},unresolved,3));
 });
+
+test('Sincronizar apontamento novo invalida estado pronto mesmo no mesmo SHA',()=>{
+ const mission={...audit(),status:'READY_FOR_OWNER',director:{commit:revision},ownerApproval:null};
+ const changed={...remote,codex:{state:'completed',commit:revision,unresolved:true,findings:true}};
+ const result=transition(mission,{type:'sync'},changed,3);
+ assert.equal(result.status,'AI_AUDIT');
+ assert.equal(result.director,null);
+ assert.equal(result.ownerApproval,null);
+ assert.equal(transition({...mission,remote:changed},{type:'sync'},changed,4).status,'READY_FOR_OWNER');
+});
