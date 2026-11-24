@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {emptyProfile,saveProfile,decodeProfiles,buildPrompt} from './factory.ts';
+import {emptyProfile,saveProfile,decodeProfiles,buildPrompt,mergeProfiles} from './factory.ts';
 const a={...emptyProfile('a'),name:'Projeto A',purpose:'Atender clientes',visual:'Vermelho e branco',preferences:'Mobile first'};
 const b={...emptyProfile('b'),name:'Projeto B',purpose:'Agendar serviços',visual:'Verde e preto',preferences:'Fluxo acessível'};
 test('Perfis separados e edição preserva outro projeto',()=>{
@@ -25,4 +25,16 @@ test('Briefing explicita pedido, identidade, agentes e limites',()=>{
   for(const text of ['Criar painel','Vermelho e branco','Mobile first','ChatGPT','Codex','IA Pessoal','Fundador','Não definido','rollback'])assert.ok(prompt.includes(text));
   assert.throws(()=>buildPrompt(a,'   '));
   assert.throws(()=>buildPrompt(a,'x'.repeat(2001)));
+});
+
+test('Laboratório protege versão principal e mantém design sob decisão do fundador',()=>{
+  const prompt=buildPrompt(a,'Não gostei do cadastro','change');
+  for(const text of ['Laboratório de alterações','SHA confirmado','não altere a branch principal','antes/depois','rollback','Design, layout e briefing finais','aprovação explícita'])assert.ok(prompt.includes(text));
+  assert.match(buildPrompt(a,'Novo site','new'),/Expanda o pedido mínimo/);
+});
+test('Backup preserva perfis distintos e não sobrescreve perfil existente',()=>{
+  const restored=decodeProfiles(JSON.stringify([a,b]));
+  const local={...a,visual:'Atualizado localmente'};
+  assert.deepEqual(mergeProfiles([local],restored),[local,b]);
+  assert.deepEqual(mergeProfiles([],restored),[a,b]);
 });
