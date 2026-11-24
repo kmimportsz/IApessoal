@@ -1,4 +1,5 @@
 import type { Memory } from './core';
+import {decodeProfiles,type ProjectProfile} from './factory.ts';
 
 export const exportOptions = ['profileName','profileStyle','avatarChoice','portrait','voiceRate','researchMode'] as const;
 const id=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -7,7 +8,7 @@ const date=(v:unknown):v is number=>Number.isSafeInteger(v)&&typeof v==='number'
 type Thread={id:string;title:string;archived:number};
 type Message={id:string;thread_id:string;prompt:string; reply:string|null;created:number;reply_at:number|null;response_model:string|null};
 type Cloud={projects:Record<string,unknown>[];events:Record<string,unknown>[]};
-export type Backup={version:2;memories:Memory[];threads:Thread[];messages:Message[];options:Record<string,string>;cloud:Cloud|null};
+export type Backup={version:2;memories:Memory[];threads:Thread[];messages:Message[];options:Record<string,string>;cloud:Cloud|null;factoryProfiles?:ProjectProfile[]};
 
 function isObject(v:unknown):v is Record<string,unknown>{return !!v&&typeof v==='object'&&!Array.isArray(v);}
 export function validateWorkspace(value:unknown, validateMemory:(v:unknown)=>Memory[]):Backup {
@@ -35,5 +36,6 @@ export function validateWorkspace(value:unknown, validateMemory:(v:unknown)=>Mem
       !value.cloud.projects.every(isObject)||!value.cloud.events.every(isObject)) throw Error('Histórico de projetos inválido.');
     cloud={projects:value.cloud.projects,events:value.cloud.events};
   }
-  return {version:2,memories:validateMemory({version:1,memories:value.memories}),threads,messages,options,cloud};
+  const factoryProfiles=value.factoryProfiles===undefined?undefined:decodeProfiles(JSON.stringify(value.factoryProfiles));
+  return {...(factoryProfiles===undefined?{}:{factoryProfiles}),version:2,memories:validateMemory({version:1,memories:value.memories}),threads,messages,options,cloud};
 }
