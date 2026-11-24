@@ -1420,13 +1420,16 @@ function PersonalApp() {
               setEdit(item); setBody(item.body); setKind(item.kind); setPrivateFlag(!!item.private); setEditor(true);
             }} />
             {!item.private && <Button label="Usar na conversa" onPress={() => useMemory(item)} />}
-            {!item.private && <Button label={autoGrants.some(g=>g.id===item.id&&g.version===item.version&&(g.thread_id===null||g.thread_id===threadId))?'Revogar uso automático':'Autorizar nesta conversa'} onPress={()=>{
-              const already=autoGrants.some(g=>g.id===item.id&&g.version===item.version);
-              if(already) void perform(()=>revokeAuto(item));
-              else confirm('Autorizar uso automático nesta conversa?', 'O texto poderá acompanhar perguntas relevantes somente na conversa selecionada. Revogar interrompe todas as autorizações automáticas desta memória.',async()=>{
-                await db.runAsync('INSERT OR REPLACE INTO memory_auto_scoped_grants(id,thread_id,version) SELECT ?,id,? FROM conversations WHERE id=? AND archived=0',item.id,item.version,threadId);await refresh(db);
-              });
-            }}/>}
+            {!item.private && <>
+              {autoGrants.some(g=>g.id===item.id&&g.version===item.version) && <Button label="Revogar todos os usos automáticos" onPress={()=>
+                confirm('Revogar autorizações?', 'Todos os usos automáticos desta memória serão interrompidos, inclusive em outras conversas.',()=>revokeAuto(item))}/>}
+              {!autoGrants.some(g=>g.id===item.id&&g.version===item.version&&(g.thread_id===null||g.thread_id===threadId)) &&
+                <Button label="Autorizar nesta conversa" onPress={()=>confirm('Autorizar uso automático?', 'Conversa: '+(threads.find(t=>t.id===threadId)?.title??'Histórico principal')+'. O texto poderá acompanhar perguntas relevantes somente nesta conversa.',async()=>{
+                  const granted=await db.runAsync('INSERT OR REPLACE INTO memory_auto_scoped_grants(id,thread_id,version) SELECT ?,c.id,? FROM conversations c JOIN memory m ON m.id=? AND m.version=? AND m.private=0 WHERE c.id=? AND c.archived=0',item.id,item.version,item.id,item.version,threadId);
+                  if(!granted.changes)throw Error('A conversa ou a memória mudou. Confira antes de autorizar.');
+                  await refresh(db);
+                })}/>}
+            </>}
             <Button label="Excluir" onPress={() => confirm('Excluir memória?', 'A memória e o histórico local de alterações serão removidos.', () => removeMemory(item))} />
           </View>
         </View>)}
