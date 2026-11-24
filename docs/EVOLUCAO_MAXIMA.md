@@ -24,3 +24,20 @@ Execute `node scripts/intelligence-benchmark.mjs compare avaliacao.json`. O rela
 
 ## Limites atuais
 Não há inferências extras, aprendizagem de pesos, novo acesso a fontes, alteração de permissões, gastos, implantação ou automação autônoma nova nesta candidata. A comparação real de modelos, a build nativa, o fluxo completo de Codex e os testes no dispositivo continuam dependentes das integrações e da autorização já previstas. Rollback: descartar a candidata isolada, mantendo o SHA do PR #15 e dados intactos.
+
+## Segunda etapa — execução e aprendizado assistido
+- Chat: botão Reavaliar prepara novo pedido crítico sem enviar automaticamente; preserva o contexto e verifica memória original, sem sobrescrever rascunho.
+- Aprendizado: declarações explícitas de preferências, decisões, objetivos, erros e lições geram rascunhos privados editáveis. Novas permissões automáticas são restritas à conversa selecionada e verificadas novamente pela fila. Permissões globais antigas são preservadas até revogação. A migração é aditiva e backups não transportam autorizações automáticas.
+- Prioridades: a central usa apenas projetos e repositórios ativos, com permissões atuais carregadas. Não cria ações externas.
+- NEXUS: alteração do estado da revisão Codex ou do CI no mesmo commit invalida o relatório anterior.
+- Benchmark: o executor usa o gateway real de sandbox, um caso por autorização, com recibo recuperável. A execução permanece pendente até haver um sandbox autorizado e credenciais locais, sem compartilhá-las no GitHub.
+
+### Executar casos reais
+Use Node 22+, um sandbox autorizado do projeto e uma pasta de resultados privada, fora do repositório. Configure localmente `IPE_BENCHMARK_URL`, `IPE_BENCHMARK_TOKEN` e `IPE_BENCHMARK_AUTHORIZED=yes`. Confirme que o gateway corresponde ao SHA declarado e que a cota de prévia é 6 chamadas/950 neurons. Não use produção nem faça commits com resultados pessoais.
+
+```sh
+node scripts/run-intelligence-case.mjs start /caminho/privado/caso.json correction SHA_DE_40_CARACTERES
+node scripts/run-intelligence-case.mjs recover /caminho/privado/caso.json
+```
+
+O primeiro comando grava o ID antes de enviar; o segundo apenas consulta o mesmo ID. Não reenvie em caso de falha incerta. A comparação de 10 casos em duas versões exige múltiplas janelas de cota; não elevar limites nem criar contas para contorná-los. O SHA declarado pelo operador não é uma atestação criptográfica do deploy.
