@@ -23,7 +23,7 @@ import * as Speech from 'expo-speech';
 import { randomUUID } from 'expo-crypto';
 import { requireOptionalNativeModule } from 'expo';
 import type { ExpoSpeechRecognitionModule as VoiceModule } from 'expo-speech-recognition';
-import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, preferenceCandidate, recentContext, relevantMemory, type Category, type Memory, type Route } from './core';
+import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, learningCandidate, recentContext, relevantMemory, type Category, type Memory, type Route } from './core';
 import { audit, initialize } from './storage';
 import { exportWorkspace, importWorkspace, readBackup } from './backup';
 import { claimJobSql } from './outbox';
@@ -177,7 +177,7 @@ function PersonalApp() {
   const [contextMemory, setContextMemory] = useState<Memory>();
   const [dismissedMemory, setDismissedMemory] = useState<string>();
   const [probeCount, setProbeCount] = useState(0);
-  const [preference, setPreference] = useState<string>();
+  const [learning, setLearning] = useState<ReturnType<typeof learningCandidate>>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [chatQuery, setChatQuery] = useState('');
   const [menu, setMenu] = useState(false);
@@ -637,8 +637,8 @@ function PersonalApp() {
         memory_version: (contextMemory??autoMemory)?.version ?? null};
       await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version,thread_id,memory_auto) VALUES (?,?,?,?,?,?,?,?,?)',
         job.id, job.prompt, job.route, job.url, job.created, job.memory_id, job.memory_version, threadId, job.memory_auto??0);
-      const candidate = preferenceCandidate(prompt);
-      setPreference(candidate && !memories.some(item => item.kind === 'Preferência' && memoryKey(item.body) === memoryKey(candidate)) ? candidate : undefined);
+      const candidate = learningCandidate(prompt);
+      setLearning(candidate && !memories.some(item => item.kind === candidate.kind && memoryKey(item.body) === memoryKey(candidate.body)) ? candidate : undefined);
       setPrompt(''); setDismissedMemory(undefined); setProfileAttached(false);clearContext();
       nearEnd.current = true;
       await audit(db, 'Mensagem adicionada à fila');
@@ -835,7 +835,7 @@ function PersonalApp() {
 
   function openThread(id:string) {
     threadDrafts.current.set(threadId,prompt);setPrompt(threadDrafts.current.get(id)??'');
-    setProfileAttached(false);setThreadId(id);setThreadPanel(false);setChatQuery('');clearContext();nearEnd.current=true;
+    setLearning(undefined);setProfileAttached(false);setThreadId(id);setThreadPanel(false);setChatQuery('');clearContext();nearEnd.current=true;
   }
   async function saveThread(rename:boolean) {
     if(!db || !threadTitle.trim()) return;
@@ -1020,7 +1020,11 @@ function PersonalApp() {
     </View>;
   }
 
-  const priorityItems=prioritizeActions(github?.history??[],automation?.entries??[]);
+  const activeRepositories=new Set(github?.repos.filter(r=>r.state==='active'&&r.availability==='available').map(r=>r.id)??[]);
+  const allowedProjects=new Set(tracking?.enabled?tracking.projects.filter(p=>p.active===1&&(!p.status||p.status==='active')&&
+    automation?.grants.some(g=>g.project_id===p.id&&g.enabled===1)).map(p=>p.id):[]);
+  const priorityItems=prioritizeActions((github?.history??[]).filter(r=>github?.account?.state==='active'&&activeRepositories.has(r.repo)),
+    (automation?.entries??[]).filter(r=>allowedProjects.has(r.project_id)));
 
   function useInitiative(item: Initiative) {
     const result = automation?.entries.find(entry => entry.project_id === item.id && entry.cycle === (item.cycle ?? 0));
@@ -1294,12 +1298,13 @@ function PersonalApp() {
                 await option('dismissed:' + suggestion.id, 'yes'); await audit(db, 'Sugestão dispensada'); await refresh(db);
               })} /></View>
             </View>}
-            {!!preference && <View style={s.card}>
-              <Text style={s.section}>Guardar esta preferência?</Text>
-              <Text style={s.text}>{preference}</Text>
+            {!!learning && <View style={s.card}>
+              <Text style={s.section}>Revisar aprendizado · {learning.kind}</Text>
+              <Text style={s.text}>{learning.body}</Text>
+              <Text style={s.muted}>Somente um rascunho local. Você decide o que guardar e autorizar.</Text>
               <View style={s.row}><Button label="Revisar e salvar" onPress={() => {
-                newMemory('Preferência', preference); setPreference(undefined);
-              }} /><Button label="Agora não" onPress={() => setPreference(undefined)} /></View>
+                newMemory(learning.kind, learning.body); setLearning(undefined);
+              }} /><Button label="Agora não" onPress={() => setLearning(undefined)} /></View>
             </View>}
             {suggestedMemory && <View style={s.card}>
               <Text style={s.kicker}>MEMÓRIA RELACIONADA · SÓ NESTE APARELHO</Text>
