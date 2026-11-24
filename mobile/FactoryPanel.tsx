@@ -4,14 +4,15 @@ import {randomUUID} from 'expo-crypto';
 import * as Clipboard from 'expo-clipboard';
 import type {SQLiteDatabase} from 'expo-sqlite';
 import {palette} from './visual';
-import {buildPrompt,decodeProfiles,emptyProfile,saveProfile,type ProjectProfile} from './factory';
+import {buildPrompt,decodeProfiles,emptyProfile,saveProfile,type ProjectProfile,type FactoryMode,type FactorySession} from './factory';
 
 const fields=[['name','Nome do projeto'],['purpose','Objetivo e público'],['visual','Cores, tipografia e identidade visual'],['preferences','Preferências de UX e tecnologia'],['constraints','Restrições e dados a preservar'],['criteria','Critérios de qualidade específicos']] as const;
 
-export function FactoryPanel({db}:{db:SQLiteDatabase}){
+export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySession}){
   const [list,setList]=useState<ProjectProfile[]>([]);
-  const [profile,setProfile]=useState<ProjectProfile>();
-  const [request,setRequest]=useState('');
+  const [profile,setProfile]=useState<ProjectProfile|undefined>(()=>session.selected?session.drafts[session.selected]?.profile:undefined);
+  const [request,setRequest]=useState(()=>session.selected?session.drafts[session.selected]?.request??'':'');
+  const [mode,setMode]=useState<FactoryMode>(()=>session.selected?session.drafts[session.selected]?.mode??'new':'new');
   const [prompt,setPrompt]=useState('');
   const [notice,setNotice]=useState('');
   const [ready,setReady]=useState(false);
@@ -29,7 +30,18 @@ export function FactoryPanel({db}:{db:SQLiteDatabase}){
     })();
     return()=>{active=false;};
   },[db]);
-  const select=(value:ProjectProfile)=>{setProfile({...value});setRequest('');setPrompt('');setNotice('');};
+  function remember(next:ProjectProfile,ask:string,kind:FactoryMode){
+    session.selected=next.id;session.drafts[next.id]={profile:{...next},request:ask,mode:kind};
+  }
+  const select=(value:ProjectProfile)=>{
+    if(lock.current)return;
+    const draft=session.drafts[value.id]??{profile:value,request:'',mode:'new' as FactoryMode};
+    remember(draft.profile,draft.request,draft.mode);
+    setProfile({...draft.profile});setRequest(draft.request);setMode(draft.mode);setPrompt('');setNotice('');
+  };
+  function edit(next:ProjectProfile,ask=request,kind=mode){
+    remember(next,ask,kind);setProfile(next);setRequest(ask);setMode(kind);setPrompt('');
+  }
   async function save(){
     if(!profile||!ready||lock.current)return;
     lock.current=true;setBusy(true);
@@ -42,7 +54,7 @@ export function FactoryPanel({db}:{db:SQLiteDatabase}){
   }
   async function generate(){
     if(!profile||!ready||lock.current)return;
-    try{setPrompt(buildPrompt(profile,request));setNotice('Briefing preparado. Revise antes de compartilhar.');}
+    try{setPrompt(buildPrompt(profile,request,mode));setNotice('Briefing preparado. Revise antes de compartilhar.');}
     catch(e){setPrompt('');setNotice(e instanceof Error?e.message:'Falha ao gerar briefing.');}
   }
   const action=(label:string,onPress:()=>void,disabled=false)=><Pressable accessibilityRole="button" accessibilityState={{disabled}} disabled={disabled} style={[s.button,disabled&&{opacity:.5}]} onPress={onPress}><Text style={s.link}>{label}</Text></Pressable>;
@@ -51,24 +63,27 @@ export function FactoryPanel({db}:{db:SQLiteDatabase}){
     <Text style={s.muted}>Crie um perfil por projeto. Reutilize sua identidade e regras sem misturar marcas.</Text>
     {notice?<Text accessibilityLiveRegion="polite" style={s.muted}>{notice}</Text>:null}
     {!ready?<Text style={s.muted}>Perfis locais indisponíveis ou carregando.</Text>:<>
-      <View style={s.row}>{list.map(item=><View key={item.id}>{action(item.name,()=>select(item),busy)}</View>)}</View>
-      {action('Novo projeto',()=>select(emptyProfile(randomUUID())),busy||list.length>=30)}
+      <View style={s.row}>{[...list,...Object.values(session.drafts).map(d=>d.profile).filter(d=>!list.some(p=>p.id===d.id))].map(item=><View key={item.id}>{action(item.name||'Novo projeto (rascunho)',()=>select(item),busy)}</View>)}</View>
+      {action('Novo projeto',()=>select(emptyProfile(randomUUID())),busy||new Set([...list.map(p=>p.id),...Object.keys(session.drafts)]).size>=30)}
       {profile&&<>
+        <Text style={s.title}>O que vamos fazer?</Text>
+        <View style={s.row}>{action((mode==='new'?'✓ ':'')+'Criar projeto',()=>edit(profile,request,'new'),busy)}
+        {action((mode==='change'?'✓ ':'')+'Laboratório de alterações',()=>edit(profile,request,'change'),busy)}</View>
+        <Text style={s.muted}>{mode==='change'?'O briefing exige uma versão isolada e comparação antes/depois.':'O briefing expande seu pedido em uma proposta completa.'} Você decide o design e aprova o resultado final.</Text>
+        <TextInput accessibilityLabel="Pedido atual" value={request} editable={!busy} multiline maxLength={2000} style={s.input}
+          onChangeText={value=>edit(profile,value)}/>
         {fields.map(([key,label])=><View key={key}><Text style={s.muted}>{label}</Text>
           <TextInput accessibilityLabel={label} value={profile[key]} editable={!busy} multiline={key!=='name'} maxLength={key==='name'?80:1600}
-            style={s.input} onChangeText={value=>{setProfile(old=>old?{...old,[key]:value}:old);setPrompt('');}}/>
+            style={s.input} onChangeText={value=>edit({...profile,[key]:value})}/>
         </View>)}
         {action('Salvar perfil do projeto',()=>void save(),busy)}
-        <Text style={s.title}>O que vamos construir?</Text>
-        <TextInput accessibilityLabel="Pedido atual" value={request} editable={!busy} multiline maxLength={2000} style={s.input}
-          onChangeText={value=>{setRequest(value);setPrompt('');}}/>
         {action('Preparar briefing',()=>void generate(),busy||!request.trim())}
         {prompt!==''&&<>
           <Text selectable style={s.muted}>{prompt}</Text>
           {action('Copiar briefing',()=>void Clipboard.setStringAsync(prompt).then(()=>setNotice('Briefing copiado.')).catch(()=>setNotice('Não foi possível copiar.')))}
           {action('Compartilhar briefing',()=>void Share.share({message:prompt}).catch(()=>setNotice('Não foi possível compartilhar.')))}
         </>}
-        <Text style={s.muted}>Perfis salvos apenas neste aparelho. O briefing não inicia o Codex nem envia informações automaticamente. Registre a versão acordada no repositório.</Text>
+        <Text style={s.muted}>Perfis salvos apenas neste aparelho. Rascunhos sobrevivem à troca de aba durante a sessão, mas não ao encerramento do app. O briefing não inicia o Codex nem envia informações automaticamente. Registre a versão acordada no repositório.</Text>
       </>}
     </>}
   </View>;
