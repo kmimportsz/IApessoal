@@ -10,6 +10,7 @@ on:
       - feature/nexus-factory
       - feature/nexus-operations
       - feature/nexus-intake
+      - release/ipe-integrada
   workflow_dispatch:
 
 permissions:
