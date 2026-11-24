@@ -149,7 +149,7 @@ function PersonalApp() {
   const [researchQuery,setResearchQuery]=useState('');
   const [research,setResearch]=useState<{searchedAt:string; dailyUsed:number; dailyLimit:number; providers?:{source:string;available:boolean}[]; results:{title:string;description:string;url:string;source?:string;date?:string}[]}>();
   const [researchMode,setResearchMode]=useState<'confirm'|'auto'|'off'>('confirm');
-  const [autoGrants,setAutoGrants]=useState<{id:string;version:number}[]>([]);
+  const [autoGrants,setAutoGrants]=useState<{id:string;version:number;thread_id:string|null}[]>([]);
   const [automation,setAutomation]=useState<Automation>();
   const [github,setGithub]=useState<GitHubStatus>();
   const [metrics,setMetrics]=useState<GitHubMetrics>();
@@ -245,7 +245,7 @@ function PersonalApp() {
       store.getAllAsync<{key: string; value: string}>('SELECT * FROM options'),
       store.getAllAsync<MemoryRevision>('SELECT * FROM memory_history ORDER BY changed DESC'),
       store.getAllAsync<Thread>('SELECT * FROM conversations ORDER BY archived,title'),
-      store.getAllAsync<{id:string;version:number}>('SELECT id,version FROM memory_auto_grants'),
+      store.getAllAsync<{id:string;version:number;thread_id:string|null}>('SELECT id,version,NULL AS thread_id FROM memory_auto_grants UNION ALL SELECT g.id,g.version,g.thread_id FROM memory_auto_scoped_grants g JOIN conversations c ON c.id=g.thread_id WHERE c.archived=0'),
     ]);
     const prefs = Object.fromEntries(options.map(item => [item.key, item.value]));
     setMemories(mem); setJobs(queue); setEntries(log); setResults(runs); setRevisions(history);
@@ -365,7 +365,7 @@ function PersonalApp() {
   const photoUri = avatarPhoto ? new File(Paths.document, avatarPhoto).uri : undefined;
   const autoMemory = useMemo(() => {
     if(context || !prompt.trim() || !autoGrants.length) return undefined;
-    const allowed = memories.filter(item=>!item.private && autoGrants.some(grant=>grant.id===item.id&&grant.version===item.version));
+    const allowed = memories.filter(item=>!item.private && autoGrants.some(grant=>grant.id===item.id&&grant.version===item.version&&(grant.thread_id===null||grant.thread_id===threadId)));
     const title=threadId==='principal'?'':threads.find(item=>item.id===threadId)?.title??'';
     const current=prompt+' '+title;
     return contextualMemory(current,allowed);
@@ -502,6 +502,7 @@ function PersonalApp() {
     if(!db) return;
     await db.withExclusiveTransactionAsync(async tx=>{
       await tx.runAsync('DELETE FROM memory_auto_grants WHERE id=?',item.id);
+      await tx.runAsync('DELETE FROM memory_auto_scoped_grants WHERE id=?',item.id);
       // Older previews still check memory version before sending.
       await tx.runAsync('UPDATE memory SET version=version+1 WHERE id=? AND version=?',item.id,item.version);
     });
@@ -1099,7 +1100,7 @@ function PersonalApp() {
       }
       const source=job.memory_id?memories.find(memory=>memory.id===job.memory_id):undefined;
       if(job.memory_id&&(!source||source.private||source.version!==job.memory_version||
-        (job.memory_auto===1&&!autoGrants.some(g=>g.id===source.id&&g.version===source.version)))){
+        (job.memory_auto===1&&!autoGrants.some(g=>g.id===source.id&&g.version===source.version&&(g.thread_id===null||g.thread_id===threadId))))){
         setNotice('A memória original mudou ou foi revogada. Escolha um novo contexto.');
         return;
       }
@@ -1419,11 +1420,11 @@ function PersonalApp() {
               setEdit(item); setBody(item.body); setKind(item.kind); setPrivateFlag(!!item.private); setEditor(true);
             }} />
             {!item.private && <Button label="Usar na conversa" onPress={() => useMemory(item)} />}
-            {!item.private && <Button label={autoGrants.some(g=>g.id===item.id&&g.version===item.version)?'Revogar automático':'Autorizar uso automático'} onPress={()=>{
+            {!item.private && <Button label={autoGrants.some(g=>g.id===item.id&&g.version===item.version&&(g.thread_id===null||g.thread_id===threadId))?'Revogar uso automático':'Autorizar nesta conversa'} onPress={()=>{
               const already=autoGrants.some(g=>g.id===item.id&&g.version===item.version);
               if(already) void perform(()=>revokeAuto(item));
-              else confirm('Usar esta memória em contexto automaticamente?', 'O texto poderá acompanhar perguntas relevantes. Alterar a memória ou revogar a permissão interrompe o uso automático.',async()=>{
-                await db.runAsync('INSERT OR REPLACE INTO memory_auto_grants VALUES (?,?)',item.id,item.version);await refresh(db);
+              else confirm('Autorizar uso automático nesta conversa?', 'O texto poderá acompanhar perguntas relevantes somente na conversa selecionada. Revogar interrompe todas as autorizações automáticas desta memória.',async()=>{
+                await db.runAsync('INSERT OR REPLACE INTO memory_auto_scoped_grants(id,thread_id,version) SELECT ?,id,? FROM conversations WHERE id=? AND archived=0',item.id,item.version,threadId);await refresh(db);
               });
             }}/>}
             <Button label="Excluir" onPress={() => confirm('Excluir memória?', 'A memória e o histórico local de alterações serão removidos.', () => removeMemory(item))} />
