@@ -1,17 +1,16 @@
-name: NEXUS | Exportar previa iOS isolada
+name: NEXUS | Publicar previa iOS isolada
 on:
   push:
     branches: [preview/nexus-ios-8045b2c]
+    paths: ['.github/workflows/nexus-preview-ios.yml']
 permissions:
-  contents: read
+  contents: write
 jobs:
   export:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -25,15 +24,33 @@ jobs:
         run: |
           npm run check
           npm test
-      - name: Exportar bundle iOS
+      - name: Exportar JavaScript iOS para Expo Go
         working-directory: mobile
         env:
           CI: 'true'
-        run: npx expo export --platform ios --output-dir ../nexus-ios-export
-      - name: Guardar exportacao verificavel
-        uses: actions/upload-artifact@v4
-        with:
-          name: nexus-ios-8045b2c
-          path: nexus-ios-export/
-          if-no-files-found: error
-          retention-days: 3
+        run: npx expo export --platform ios --no-bytecode --output-dir ../nexus-preview-ios
+      - name: Conferir exportacao e gravar hashes
+        run: |
+          python3 - <<'PY'
+          import json, hashlib, base64, pathlib
+          root=pathlib.Path('nexus-preview-ios')
+          m=json.loads((root/'metadata.json').read_text())['fileMetadata']['ios']
+          assert m['bundle'].endswith('.js'),m
+          def asset(path,kind,ext=None):
+              f=root/path
+              assert f.is_file()
+              d={'path':path,'key':f.stem,'hash':base64.urlsafe_b64encode(hashlib.sha256(f.read_bytes()).digest()).decode().rstrip('='),'contentType':kind}
+              if ext: d['fileExtension']='.'+ext
+              return d
+          data={'source':'8045b2c35366540650cc68fbb43a82de02ab2d7d','launchAsset':asset(m['bundle'],'application/javascript'),'assets':[asset(a['path'],'image/png',a['ext']) for a in m['assets']]}
+          assert b'NEXUS' in (root/m['bundle']).read_bytes()
+          (root/'manifest-data.json').write_text(json.dumps(data,ensure_ascii=False))
+          PY
+      - name: Publicar apenas artefatos na branch isolada
+        run: |
+          test "$GITHUB_REF" = "refs/heads/preview/nexus-ios-8045b2c"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f nexus-preview-ios/
+          git commit -m "Publicar exportacao iOS NEXUS [skip ci]"
+          git push origin HEAD:refs/heads/preview/nexus-ios-8045b2c
