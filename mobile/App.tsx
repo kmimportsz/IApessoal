@@ -2,7 +2,7 @@ import { assessRequest, competencyChecks, contextualMemory, trustedResearchUrl }
 import * as WebBrowser from 'expo-web-browser';
 import { githubLink } from './github-links';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StatusBar, Share, Linking,
+import { ActivityIndicator, Animated, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StatusBar, Share, Linking,
   StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useNetInfo } from '@react-native-community/netinfo';
@@ -101,7 +101,7 @@ const receiptCodes: Record<string, string> = {
 const tabIcons: Record<Tab, IconName> = {Conversa: 'chat', Projetos: 'layers', Memórias: 'layers', Laboratório: 'flask', Ajustes: 'settings'};
 const connectionLabels = {unconfigured: 'Modo local', offline: 'Offline', checking: 'Verificando modelo',
   unreachable: 'Servidor indisponível', disabled: 'Modelo desativado', auth: 'Credencial recusada', online: 'Gateway online'};
-type ChatRow = { key: string; date: number; kind: 'date' | 'prompt' | 'reply'; job?: Job };
+type ChatRow = { key: string; date: number; kind: 'date' | 'prompt' | 'reply' | 'thinking'; job?: Job };
 type MemoryRevision = {memory_id: string; version: number; changed: number};
 const time = (stamp: number) => new Date(stamp).toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'});
 const money = (cents: number) => (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -109,6 +109,28 @@ const formatDate = (timestamp: number) => new Date(timestamp).toLocaleDateString
 
 export default function App() {
   return <SafeAreaProvider><PersonalApp /></SafeAreaProvider>;
+}
+
+
+function ThinkingDots({label}: {label:string}) {
+  const progress=useRef(new Animated.Value(0)).current;
+  useEffect(()=>{
+    const motion=Animated.loop(Animated.timing(progress,{toValue:3,duration:1250,useNativeDriver:true}));
+    motion.start();
+    return ()=>motion.stop();
+  },[progress]);
+  const sequence=[
+    [0.4,1,0.4,0.4],
+    [0.4,0.4,1,0.4],
+    [0.4,0.4,0.4,1],
+  ];
+  return <View style={s.thinkingIndicator} accessibilityLabel={label} accessibilityLiveRegion="polite">
+    <View style={s.thinkingDots} importantForAccessibility="no-hide-descendants">
+      {sequence.map((outputRange,index)=><Animated.View key={index}
+        style={[s.thinkingDot,{opacity:progress.interpolate({inputRange:[0,1,2,3],outputRange})}]}/>)}
+    </View>
+    <Text style={s.thinkingLabel}>{label}</Text>
+  </View>;
 }
 
 function PersonalApp() {
@@ -361,6 +383,10 @@ function PersonalApp() {
       if (chatQuery.trim() && !matches(job.prompt + ' ' + (job.reply ?? '') + ' ' + formatDate(job.created), chatQuery.trim(), 2)) continue;
       items.push({key: job.id + ':p', kind: 'prompt', date: job.created, job});
       if (job.reply) items.push({key: job.id + ':r', kind: 'reply', date: job.reply_at ?? job.created, job});
+      else if (job.state==='queued' || job.state==='sending' ||
+        (job.state==='uncertain' && ['processing','started'].includes(job.recovery_state ?? ''))) {
+        items.push({key:job.id+':thinking',kind:'thinking',date:job.created+1,job});
+      }
     }
     items.sort((a, b) => a.date - b.date);
     const result: ChatRow[] = [];
@@ -444,10 +470,13 @@ function PersonalApp() {
   function clearContext() { setContext(''); setContextMemory(undefined); }
 
   function confirmSend(job: Job) {
-    confirm('Enviar mensagem?', job.route === 'paid'
-      ? 'O texto exibido na conversa, incluindo o contexto, irá ao gateway e à OpenAI. A chamada pode consumir seu orçamento.'
-      : 'O texto exibido no balão, incluindo o contexto selecionado, será enviado ao gateway para gerar a resposta.',
-    () => send(job));
+    // Mensagens comuns nao exigem segunda confirmacao. Custos pagos continuam protegidos.
+    if (job.route === 'paid') {
+      confirm('Confirmar envio pago?', 'Esta chamada pode consumir seu orçamento. Confira o conteúdo e o contexto antes de enviar.',
+        () => send(job));
+    } else {
+      void perform(() => send(job));
+    }
   }
 
   useEffect(()=>{
@@ -988,6 +1017,19 @@ function PersonalApp() {
     if (item.kind === 'date') return <View style={s.day}><View style={s.rule} /><Text style={s.dayText}>
       {formatDate(item.date) === formatDate(Date.now()) ? 'Hoje' : formatDate(item.date)}
     </Text><View style={s.rule} /></View>;
+    if (item.kind === 'thinking') {
+      const pending = item.job!;
+      const label = pending.state==='queued'
+        ? (connected === false ? 'Aguardando conexão' : 'Aguardando envio')
+        : pending.state==='sending' ? 'Enviando'
+        : 'Pensando';
+      return <View style={s.messageRow}>
+        <Avatar small ring={palette.blueDark} choice={avatarChoice} photo={photoUri} />
+        <View style={[s.bubble,s.assistantBubble,s.thinkingBubble]}>
+          <ThinkingDots label={label}/>
+        </View>
+      </View>;
+    }
     const job = item.job!;
     const isReply = item.kind === 'reply';
     const content = isReply ? job.reply! : job.prompt;
@@ -1019,7 +1061,9 @@ function PersonalApp() {
       <View style={[s.bubble, isReply ? s.assistantBubble : s.userBubble]}>
         <Text style={s.message} selectable>{content}</Text>
         <View style={s.bubbleMeta}>
-          <Text style={s.muted}>{isReply && job.response_model ? job.response_model + ' · ' : ''}{!isReply && job.state !== 'done' ? jobLabel + ' · ' : ''}{time(item.date)}</Text>
+          <Text style={s.muted}>{isReply && job.response_model ? job.response_model + ' · ' : ''}{!isReply && (job.state==='rejected' ||
+            (job.state==='uncertain' && !['processing','started'].includes(job.recovery_state ?? '')) ||
+            (job.state==='queued' && connected===false)) ? jobLabel + ' · ' : ''}{time(item.date)}</Text>
           <Pressable accessibilityRole="button" accessibilityLabel="Ações da mensagem" onPress={actions} style={s.messageAction}>
             <Icon name="more" size={19} />
           </Pressable>
@@ -1700,6 +1744,11 @@ const s = StyleSheet.create({
   messageRow: {flexDirection: 'row', alignItems: 'flex-start', gap: 8},
   userRow: {justifyContent: 'flex-end'},
   replyActions: {flexDirection: 'row', flexWrap: 'wrap', gap: 14},
+  thinkingBubble: {paddingVertical: 11, paddingHorizontal: 15, minWidth: 112},
+  thinkingIndicator: {flexDirection:'row',alignItems:'center',gap:9,minHeight:25},
+  thinkingDots: {flexDirection:'row',alignItems:'center',gap:4},
+  thinkingDot: {height:6,width:6,borderRadius:3,backgroundColor:'#57A0FF'},
+  thinkingLabel: {color:'#A9C5E7',fontSize:13,fontWeight:'600'},
   bubble: {maxWidth: '87%', paddingTop: 9, paddingHorizontal: 12, paddingBottom: 2, borderRadius: 18, borderWidth: 1},
   assistantBubble: {backgroundColor: palette.assistant, borderColor: '#263649', borderTopLeftRadius: 7},
   userBubble: {backgroundColor: palette.user, borderColor: '#205694', borderTopRightRadius: 7},
