@@ -27,3 +27,11 @@ Prioridade ao cliente, simplicidade de navegação, responsividade, acessibilida
 ## Estado da primeira entrega
 
 Perfis locais por projeto no aparelho; briefing gerado deterministicamente, copiável e compartilhável. Persistência SQLite aditiva, sem sincronização automática. O arquivo por projeto deve ser atualizado explicitamente por um agente autorizado. Ainda não é um executor autônomo.
+
+## Fluxo de criação e laboratório
+
+Um pedido curto inicia a expansão de requisitos, planejamento, riscos, proposta visual, implementação, testes e documentação. O fundador mantém a decisão final de layout, design e briefing; sugestões dos agentes não equivalem a aprovação. Use a identidade do projeto, não a de outro cliente.
+
+Alterações de projetos existentes devem começar por uma linha de base verificável e branch/worktree isolada. Preserve a versão principal e seus dados; apresente comparação antes/depois, regressões, prévia e rollback. Nenhuma integração ou publicação final sem autorização explícita.
+
+O Factory prepara estes dois tipos de briefing. Rascunhos ficam separados durante a sessão e perfis salvos integram o backup cifrado; restauração mantém perfis já existentes. A execução automática de agentes e provisionamento de ambientes ainda não estão implementados.
