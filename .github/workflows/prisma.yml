@@ -1,0 +1,22 @@
+name: PRISMA | Validacao
+on:
+  pull_request:
+    branches: [nexus-fase-a]
+    paths: ['experiments/prisma/**', '.github/workflows/prisma.yml']
+permissions:
+  contents: read
+jobs:
+  prisma:
+    name: PRISMA | Testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test experiments/prisma/prisma.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PRISMA-offline
+          path: experiments/prisma/index.html
+          retention-days: 7
