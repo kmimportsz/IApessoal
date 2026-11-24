@@ -6,6 +6,7 @@ on:
       - integracao-v1.6.1
       - integracao-v1.6.2
       - nexus-fase-a
+      - fix/nexus-experiencia-simples
   workflow_dispatch:
 
 permissions:
