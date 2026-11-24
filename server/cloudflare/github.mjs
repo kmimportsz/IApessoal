@@ -560,7 +560,7 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
 }
 
 // Only the fixed repository and read endpoints below are available to NEXUS.
-export async function nexusGitHubEvidence(env,repo,brief,investigate=false) {
+export async function nexusGitHubEvidence(env,repo,brief,investigate=false,includeSamples=false) {
   if(!configured(env))throw Error('GitHub indisponível');
   let token;
   try {token=await installationToken(env,repo.id,undefined,true);}
@@ -590,6 +590,7 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false) {
     }catch{ /* Existing installation might lack Checks: read. */ }
   }
   const files=[];
+  const samples=[];
   let filesComplete=false, filesAvailable=false;
   if(investigate){
     let list;
@@ -612,6 +613,8 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false) {
           const source=decoder.decode(Uint8Array.from(atob(content.content),c=>c.charCodeAt(0))).slice(0,5000);
           if(!source.trim())continue;
           file.read=true;file.lines=source.split(/\r?\n/).length;
+          if(includeSamples&&!/[\x00]|-----BEGIN |\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA)[a-z\d_]+|(?:password|secret|api[_-]?key)\s*[:=]\s*['"][^'"]+['"]/i.test(source))
+            samples.push({path:file.path,lines:source.slice(0,2200).split(/\r?\n/).slice(0,80)});
           file.disabledTestHint=file.role==='Testes'&&/\b(?:test|it|describe)\.(?:skip|todo|only)\s*\(/.test(source);
         }catch{ /* Missing reads remain visible. */ }
       }
@@ -621,7 +624,7 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false) {
         throw Error('O commit do PR mudou durante a auditoria');
     }
   }
-  return {repo:repo.name,commit:pr.head.sha,ci,checks,files,filesAvailable,filesComplete,issue:brief.issue,pr:brief.pr,
+  return {repo:repo.name,commit:pr.head.sha,ci,checks,files,filesAvailable,filesComplete,samples,issue:brief.issue,pr:brief.pr,
     issueUrl:'https://github.com/'+repo.name+'/issues/'+brief.issue,
     prUrl:'https://github.com/'+repo.name+'/pull/'+brief.pr};
 }

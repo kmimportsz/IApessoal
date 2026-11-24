@@ -190,3 +190,10 @@ CREATE TABLE IF NOT EXISTS nexus_events_v1 (
 CREATE UNIQUE INDEX IF NOT EXISTS nexus_missions_v1_exclusive_branch
 ON nexus_missions_v1(installation,repo,json_extract(record,'$.brief.branch'))
 WHERE json_extract(record,'$.status') NOT IN ('CANCELLED','FAILED','RELEASED');
+
+CREATE TABLE IF NOT EXISTS nexus_model_audits_v1 (
+  mission TEXT NOT NULL REFERENCES nexus_missions_v1(id),
+  revision TEXT NOT NULL,
+  call_id TEXT NOT NULL UNIQUE REFERENCES ai_calls_v12(id),
+  PRIMARY KEY(mission,revision)
+);

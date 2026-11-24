@@ -1,5 +1,5 @@
 import React,{useState} from 'react';
-import {Linking,Pressable,Share,StyleSheet,Text,TextInput,View} from 'react-native';
+import {Alert,Linking,Pressable,Share,StyleSheet,Text,TextInput,View} from 'react-native';
 import {randomUUID} from 'expo-crypto';
 import {palette} from './visual';
 
@@ -7,7 +7,7 @@ type Mission={id:string;repository:string;status:string;revision:string|null;ite
 type Detail={mission:Mission;version:number;events:{id:string;type:string;status:string;at:number;reason?:string}[];
   review:{gate:{blockers:{axis:string;reason:string}[]};status:string;correctionPackage?:object;
     director?:{commit:string;verified:{text:string;url:string}[];hypotheses:{text:string}[];limits:string[];
-      requests:{location:string;why:string;test:string}[]}}};
+      requests:{location:string;why:string;test:string}[];model?:{state:string;neurons?:number;observations?:{path:string;line:number;problem:string;verification:string}[]}}}};
 const axes=[['objective','Objetivo'],['correctness','Funcionamento'],['experience','Experiência'],
   ['security','Segurança'],['resilience','Resiliência'],['delivery','Entrega']];
 const dimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
@@ -92,6 +92,18 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
           <Text style={s.title}>{item.location}</Text><Text style={s.muted}>{item.why} {item.test}</Text>
         </View>)}
         {detail.review.director.limits.map(item=><Text key={item} style={s.muted}>{item}</Text>)}
+        {!!detail.review.director.model&&detail.review.director.model.state!=='not_requested'&&<>
+          <Text style={s.title}>Hipóteses da revisão assistida</Text>
+          {detail.review.director.model.state==='completed'?<>
+            <Text style={s.muted}>Consumo registrado · {detail.review.director.model.neurons} Neurons</Text>
+            {detail.review.director.model.observations?.map((item,index)=><View key={index}>
+              <Text style={s.title}>{item.path}:{item.line}</Text>
+              <Text style={s.muted}>{item.problem} Verificação proposta: {item.verification}</Text>
+            </View>)}
+            {!detail.review.director.model.observations?.length&&<Text style={s.muted}>Nenhuma hipótese citável na amostra.</Text>}
+          </>:<Text style={s.muted}>{({quota:'Limite da revisão assistida atingido.',no_sample:'Sem amostras elegíveis.',
+            already_run:'Já existe uma tentativa neste commit.',unavailable:'Revisão assistida indisponível.'} as Record<string,string>)[detail.review.director.model.state]}</Text>}
+        </>}
       </View>}
       {review&&<>
         <View style={s.row}>
@@ -135,6 +147,10 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
       </>}
       {['AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER'].includes(state??'')&&
         button('Investigar PR e gerar relatório',()=>void run(()=>event('audit')))}
+      {['AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER'].includes(state??'')&&
+        button('Investigar com revisão assistida',()=>Alert.alert('Enviar amostra para revisão?',
+          'Até três amostras do código autorizado serão enviadas ao Workers AI. A revisão usa a cota gratuita e precisa de validação externa.',
+          [{text:'Cancelar',style:'cancel'},{text:'Autorizar uma revisão',onPress:()=>void run(()=>event('audit',{model:true}))}]))}
       {state==='IMPLEMENTING'&&button('Vincular número do PR digitado',()=>void run(()=>event('link_pr',{pr:Number(payload)})))}
       {!['OWNER_APPROVED','CANCELLED','FAILED','PAUSED'].includes(state??'')&&<>
         {<TextInput accessibilityLabel="Número do PR ou decisão da missão" value={payload} onChangeText={setPayload} style={s.input}/>}

@@ -487,7 +487,14 @@ test('NEXUS: issue e PR vinculados ao SHA, revisÃ£o de UX bloqueante e reavaliaÃ
     INSERT INTO github_inventory_v15 VALUES(12,'456','test','available',0);
     INSERT INTO github_account_v15(singleton,installation,state,next_sync)VALUES(1,'456','active',0);`);
   const id=crypto.randomUUID();
-  let commit='a'.repeat(40), branch='nexus-test', ci='success';
+  let commit='a'.repeat(40), branch='nexus-test', ci='success', modelCalls=0;
+  env.AI.run=async(_,payload)=>{
+    modelCalls++;
+    assert.match(payload.messages[1].content,/src\/cadastro\.test\.ts/);
+    return {response:{observations:[{path:'src/cadastro.ts',line:1,problem:'Estado fixo pode esconder erro.',
+      verification:'Verifique entradas diferentes.'},{path:'inventado.ts',line:999,problem:'Inventado',verification:'Ignorar'}]},
+      usage:{prompt_tokens:80,completion_tokens:90}};
+  };
   t.mock.method(globalThis,'fetch',async address=>{
     const {pathname,searchParams}=new URL(address);
     const marker='NEXUS-MISSION: '+id;
@@ -528,8 +535,14 @@ test('NEXUS: issue e PR vinculados ao SHA, revisÃ£o de UX bloqueante e reavaliaÃ
   await send('start');
   branch='other';await send('sync',undefined,409);branch='nexus-test';
   await send('sync');
-  const initial=await send('audit');
+  const initial=await send('audit',{model:true});
   assert.equal(initial.mission.status,'EVIDENCE_MISSING');
+  assert.equal(initial.mission.director.model.state,'completed');
+  assert.equal(initial.mission.director.model.observations.length,1);
+  assert.equal(modelCalls,1);
+  assert.doesNotMatch(JSON.stringify(initial.mission.remote),/test\.skip|export const/);
+  await send('audit',{model:true},429);
+
   assert.equal(initial.mission.director.verified.some(item=>item.text.includes('src/cadastro.ts')),true);
   assert.equal(initial.mission.director.hypotheses.some(item=>item.text.includes('ignorado')),true);
   assert.doesNotMatch(JSON.stringify(initial.mission.director),/test\.skip|export const/);
@@ -547,7 +560,12 @@ test('NEXUS: issue e PR vinculados ao SHA, revisÃ£o de UX bloqueante e reavaliaÃ
   const dimensions=['navegaÃ§Ã£o','clareza','design','responsividade','acessibilidade','tarefas principais'];
   await send('attest',{...record,commit,status:'failed',axis:'experience',functionalUrl:url,visualUrl:url,dimensions});
   ci='failure';
-  assert.equal((await send('audit')).mission.status,'CHANGES_REQUIRED');
+  const second=await send('audit',{model:true});
+  assert.equal(second.mission.status,'CHANGES_REQUIRED');
+  assert.equal(second.mission.director.model.state,'quota');
+  assert.equal(modelCalls,1);
+  const used=await (await call('/status')).json();
+  assert.equal(used.dailyUsed,1);
   assert.equal((await send('approve',{commit},409)).error.length>0,true);
   const detail=await (await call(path)).json();
   assert.equal(detail.review.delivery,'manual');

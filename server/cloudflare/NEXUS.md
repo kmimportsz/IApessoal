@@ -45,3 +45,19 @@ ChatGPT e Codex precisam ser invocados. A leitura de metadados do GitHub não tr
 O brief ainda pode ser importado como JSON. Evidências e correções têm ações e campos próprios no painel. O proprietário continua responsável pelas atestações externas e pela confirmação de UX. A auditoria não invoca modelos e não pode se autoaprovar.
 
 **Compartilhar pacote para o Codex** exporta um contrato versionado `nexus.revision_request` com missão, SHA, branch, escopo e testes de aceite. O pacote indica entrega manual. Um transporte futuro precisa de autorização explícita, verificação do destinatário e do escopo, deduplicação e confirmação real de recebimento. O pacote não inicia uma sessão do Codex.
+
+## Revisão assistida e executor local
+
+A ação **Investigar com revisão assistida** solicita confirmação antes de enviar uma amostra de até três arquivos ao Workers AI. Ela exige a configuração gratuita existente, reserva no mesmo registro de inferências do gateway e permite uma auditoria assistida por dia e uma tentativa por missão/SHA. Códigos com padrões reconhecidos de credenciais não são enviados. O relatório descarta citações fora das linhas fornecidas. O conteúdo das amostras não é gravado no diário. As observações permanecem hipóteses e não contam como evidência independente, pedido autorizado ou aprovação.
+
+O executor usa o Codex CLI oficial já autenticado via ChatGPT. Confira o pacote da Diretora e autorize seus bytes pelo SHA-256. Execute em um clone local do repositório com `origin` HTTPS do GitHub e a branch no SHA autorizado:
+
+```sh
+node scripts/nexus-codex.mjs pacote.json SHA256_AUTORIZADO /caminho/do/clone /diretorio/privado
+```
+
+Para ler o pacote diretamente do gateway, configure `NEXUS_GATEWAY_TOKEN` no executor local, informe o UUID da missão no lugar do arquivo e a origem HTTPS do gateway no último argumento. O hash é calculado sobre o JSON formatado com duas posições de indentação, sem quebra de linha final. Essa leitura aceita missões em `CHANGES_REQUIRED` e exige nova autorização se o pacote mudar. A credencial do gateway não é repassada ao Codex.
+
+O executor cria uma árvore Git local isolada. Um recibo inicial registra a solicitação. `session_started` exige o evento real `thread.started` do CLI. `local_changes_present` exige a conclusão do turno e alterações observadas na árvore local. O recibo não comprova teste, correção aceita ou publicação. Revise as mudanças, envie um commit por um fluxo autorizado e use **Conferir Issue, PR e CI** para acompanhar o novo SHA. O executor não envia commits, não publica e não mantém um agente em execução contínua.
+
+Validação desta revisão: o GPT-OSS 20B analisou uma amostra fictícia de carrinho vazio e citou a linha que devolvia 1. Um teste independente falhou antes da correção manual e passou depois. A chamada direta de avaliação registrou 18,35 Neurons. Os testes integrados exercitam a reserva, o descarte de citações inventadas, a propagação de hipóteses e a rejeição de um SHA divergente. O teste real do Codex CLI identificou autenticação existente, mas a inicialização falhou no diretório gerenciado somente leitura, antes de `thread.started`. O ciclo automático permanece sem validação.

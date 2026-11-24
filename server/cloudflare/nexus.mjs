@@ -1,3 +1,4 @@
+import { runNexusModel } from './nexus-model.mjs';
 import { evaluateQualityGate, qualityAxes } from './excellence-engine.mjs';
 import { nexusGitHubEvidence } from './github.mjs';
 import { idPattern } from './recovery.mjs';
@@ -66,6 +67,7 @@ export function directorReport(remote,now) {
     test:'Reexecutar '+check.name+' e vincular o resultado ao novo commit.',url:remote.prUrl+'/checks',
   }));
   return {commit:remote.commit,createdAt:now,verified,hypotheses,requests,ci:remote.ci,
+    model:remote.modelReview??{state:'not_requested'},
     limits:[...(!remote.filesAvailable?['A lista de arquivos não estava disponível.']:
       !remote.filesComplete?['A lista de arquivos é parcial.']:[]),
       'A inspeção é amostral e não executa código. A experiência real ainda exige prova funcional e visual.']};
@@ -135,7 +137,7 @@ async function visibleRepo(env,id,installation) {
     .bind(id,installation).first();
 }
 
-export async function nexusRoute({env,path,method,read,now}) {
+export async function nexusRoute({env,path,method,read,now,quota}) {
   const installation=env.GITHUB_INSTALLATION_ID;
   if(!installation)return fail('NEXUS requer um repositório da instalação GitHub autorizada.',503);
   const match=/^\/nexus\/(missions)(?:\/([a-f\d-]+)(\/events)?)?$/i.exec(path);
@@ -196,8 +198,15 @@ export async function nexusRoute({env,path,method,read,now}) {
   let next,remote;
   if(!['OWNER_APPROVED','CANCELLED','FAILED','PAUSED'].includes(m.status) && ['sync','approve','audit'].includes(event.type)){
     if(!m.brief.pr)return fail('Vincule o número do PR antes de sincronizar.',409);
-    try {remote=await nexusGitHubEvidence(env,repo,m.brief,event.type==='audit');}
+    const useModel=event.type==='audit'&&event.payload?.model===true&&
+      ['AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER'].includes(m.status);
+    try {remote=await nexusGitHubEvidence(env,repo,m.brief,event.type==='audit',useModel);}
     catch{return fail('Não foi possível verificar o Issue e o PR no GitHub. Confira o marcador, a branch e as permissões.',409);}
+    if(useModel&&remote.commit===m.revision)remote.modelReview=await runNexusModel(env,{remote,mission:m,version:row.version,eventId:event.id,now,quota});
+    // Source samples are transient and never enter the mission or audit journal.
+    delete remote.samples;
+    if((!remote.modelReview||remote.modelReview.state==='already_run')&&m.director?.commit===m.revision&&m.director.model?.state==='completed')
+      remote.modelReview=m.director.model;
   }
   try {next=transition(m,event,remote,now);}
   catch(error){return fail(error.message,409);}
