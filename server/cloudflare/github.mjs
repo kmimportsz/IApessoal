@@ -560,6 +560,44 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
 }
 
 // Only the fixed repository and read endpoints below are available to NEXUS.
+// Only the authenticated GitHub API metadata identifies the official Codex bot.
+// The summary format is an observation, not a signed attestation of implementation.
+// Bound network work; never claim a current receipt from an incomplete scan.
+export async function collectCodexComments(readPage,maxPages=5){
+  const comments=[];
+  for(let page=1;page<=maxPages;page++){
+    const batch=await readPage(page);
+    if(!Array.isArray(batch)||batch.length>50)return null;
+    comments.push(...batch);
+    if(batch.length<50)return comments;
+  }
+  return null;
+}
+export function codexReviewReceipt(comments,commit,prUrl){
+  if(!Array.isArray(comments))return {state:'unavailable'};
+  const trusted=comments.filter(c=>c?.user?.id===199175422&&c.user.login==='chatgpt-codex-connector[bot]'&&c.user.type==='Bot'&&
+    c.performed_via_github_app?.id===1144995&&c.performed_via_github_app.slug==='chatgpt-codex-connector'&&
+    safeId(c.id)&&typeof c.body==='string'&&c.body.length<=30000&&c.body.includes('<!-- codex-pull-request-review-summary -->'))
+    .sort((a,b)=>(Date.parse(b.updated_at)||0)-(Date.parse(a.updated_at)||0)||b.id-a.id);
+  if(!trusted.length)return {state:'not_observed'};
+  const comment=trusted[0];
+  const match=/<!-- codex-review-state:v1 (\{[^\r\n]{1,4096}\}) -->/.exec(comment.body);
+  if(!match)return {state:'unavailable'};
+  let review;
+  try{review=JSON.parse(match[1]).code_review;}catch{return {state:'unavailable'};}
+  if(!review||!shaPattern.test(review.commit_sha??''))return {state:'not_observed'};
+  if(review.commit_sha!==commit)return {state:'stale'};
+  if(!['running','completed'].includes(review.status))return {state:'unavailable'};
+  const receipt={state:review.status,commit,url:prUrl+'#issuecomment-'+comment.id};
+  if(review.status==='completed'){
+    if(typeof review.has_any_findings!=='boolean'||typeof review.has_unresolved_findings!=='boolean'||
+      (review.has_unresolved_findings&&!review.has_any_findings))return {state:'unavailable'};
+    receipt.findings=review.has_any_findings;
+    receipt.unresolved=review.has_unresolved_findings;
+  }
+  return receipt;
+}
+
 export async function nexusGitHubEvidence(env,repo,brief,investigate=false,includeSamples=false) {
   if(!configured(env))throw Error('GitHub indisponível');
   let token;
@@ -589,6 +627,13 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false,inclu
       ci=checks.some(check=>check.status==='failed')?'failed':checks.every(check=>check.status==='passed')?'passed':'pending';
     }catch{ /* Existing installation might lack Checks: read. */ }
   }
+  const prUrl='https://github.com/'+repo.name+'/pull/'+brief.pr;
+  let codex={state:'unavailable'};
+  try{
+    const comments=await collectCodexComments(page=>github(base+'/issues/'+brief.pr+'/comments?per_page=50&page='+page,token,undefined,262_144));
+    // Never store arbitrary comment content. The only retained fields are typed metadata and a GitHub reference.
+    codex=codexReviewReceipt(comments,pr.head.sha,prUrl);
+  }catch{ /* A missing permission or format never implies a completed review. */ }
   const files=[];
   const samples=[];
   let filesComplete=false, filesAvailable=false;
@@ -624,7 +669,7 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false,inclu
         throw Error('O commit do PR mudou durante a auditoria');
     }
   }
-  return {repo:repo.name,commit:pr.head.sha,ci,checks,files,filesAvailable,filesComplete,samples,issue:brief.issue,pr:brief.pr,
+  return {repo:repo.name,commit:pr.head.sha,ci,checks,codex,files,filesAvailable,filesComplete,samples,issue:brief.issue,pr:brief.pr,
     issueUrl:'https://github.com/'+repo.name+'/issues/'+brief.issue,
     prUrl:'https://github.com/'+repo.name+'/pull/'+brief.pr};
 }
