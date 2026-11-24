@@ -4,11 +4,11 @@ import {randomUUID} from 'expo-crypto';
 import * as Clipboard from 'expo-clipboard';
 import type {SQLiteDatabase} from 'expo-sqlite';
 import {palette} from './visual';
-import {buildPrompt,quickProfile,decodeProfiles,emptyProfile,saveProfile,designPalettes,validPalette,addLesson,type DesignPalette,type ProjectLesson,type ProjectProfile,type FactoryMode,type FactorySession} from './factory';
+import {buildPrompt,factoryHandoff,quickProfile,decodeProfiles,emptyProfile,saveProfile,designPalettes,validPalette,addLesson,type DesignPalette,type ProjectLesson,type ProjectProfile,type FactoryMode,type FactorySession,type FactoryHandoff} from './factory';
 
 const fields=[['name','Nome do projeto'],['purpose','Objetivo e público'],['visual','Cores, tipografia e identidade visual'],['preferences','Preferências de UX e tecnologia'],['constraints','Restrições e dados a preservar'],['criteria','Critérios de qualidade específicos']] as const;
 
-export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySession}){
+export function FactoryPanel({db,session,onLink}:{db:SQLiteDatabase;session:FactorySession;onLink?:(draft:FactoryHandoff)=>void}){
   const [list,setList]=useState<ProjectProfile[]>([]);
   const [profile,setProfile]=useState<ProjectProfile|undefined>(()=>session.selected?session.drafts[session.selected]?.profile:undefined);
   const [request,setRequest]=useState(()=>session.selected?session.drafts[session.selected]?.request??'':'');
@@ -96,6 +96,7 @@ export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySess
       {prompt!==''&&<>
         <Text style={s.title}>Briefing pronto para revisão</Text>
         <Text selectable style={s.muted}>{prompt}</Text>
+        {onLink&&profile&&action('Vincular briefing a uma entrega',()=>{try{onLink(factoryHandoff(profile,request,mode));}catch(e){setNotice(e instanceof Error?e.message:'Não foi possível vincular.');}},busy)}
         {action('Copiar briefing',()=>void Clipboard.setStringAsync(prompt).then(()=>setNotice('Briefing copiado.')).catch(()=>setNotice('Não foi possível copiar.')))}
         {action('Compartilhar briefing',()=>void Share.share({message:prompt}).catch(()=>setNotice('Não foi possível compartilhar.')))}
       </>}
