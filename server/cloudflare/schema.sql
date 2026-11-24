@@ -177,3 +177,23 @@ CREATE TABLE IF NOT EXISTS github_finding_priority_v16 (
   finding TEXT PRIMARY KEY REFERENCES github_findings_v15(id),
   priority TEXT NOT NULL CHECK(priority IN ('crítica','alta','média','baixa','oportunidade'))
 );
+
+CREATE TABLE IF NOT EXISTS nexus_missions_v1 (
+  id TEXT PRIMARY KEY, repo INTEGER NOT NULL, installation TEXT NOT NULL,
+  version INTEGER NOT NULL, record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS nexus_missions_v1_scope ON nexus_missions_v1(installation,repo);
+CREATE TABLE IF NOT EXISTS nexus_events_v1 (
+  id TEXT PRIMARY KEY, mission TEXT NOT NULL REFERENCES nexus_missions_v1(id),
+  version INTEGER NOT NULL, record TEXT NOT NULL, UNIQUE(mission,version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS nexus_missions_v1_exclusive_branch
+ON nexus_missions_v1(installation,repo,json_extract(record,'$.brief.branch'))
+WHERE json_extract(record,'$.status') NOT IN ('CANCELLED','FAILED','RELEASED');
+
+CREATE TABLE IF NOT EXISTS nexus_model_audits_v1 (
+  mission TEXT NOT NULL REFERENCES nexus_missions_v1(id),
+  revision TEXT NOT NULL,
+  call_id TEXT NOT NULL UNIQUE REFERENCES ai_calls_v12(id),
+  PRIMARY KEY(mission,revision)
+);

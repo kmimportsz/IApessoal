@@ -59,7 +59,7 @@ class GitHubStatusError extends Error {
   constructor(status) { super('GitHub HTTP error'); this.status=status; }
 }
 
-async function installationToken(env, repositoryId, setStage=()=>{}) {
+async function installationToken(env, repositoryId, setStage=()=>{}, includeChecks=false) {
   setStage(2);
   const key = await crypto.subtle.importKey('pkcs8',privateKeyDer(env.GITHUB_PRIVATE_KEY),
     {name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['sign']);
@@ -70,7 +70,7 @@ async function installationToken(env, repositoryId, setStage=()=>{}) {
   const sig = base64url(new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',key,encoder.encode(unsigned))));
   setStage(4);
   const result = await github('/app/installations/'+env.GITHUB_INSTALLATION_ID+'/access_tokens',unsigned+'.'+sig,
-    repositoryId ? {repository_ids:[repositoryId],permissions:{contents:'read',issues:'read',pull_requests:'read'}} :
+    repositoryId ? {repository_ids:[repositoryId],permissions:{contents:'read',issues:'read',pull_requests:'read',...(includeChecks?{checks:'read'}:{})}} :
       {permissions:{metadata:'read'}},524_288,setStage);
   setStage(10);
   if (typeof result.token!=='string') throw Error('Instalação indisponível');
@@ -557,4 +557,74 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
       .bind(success?'finished':'uncertain',accounted??null,id).run();
     await env.DB.prepare('UPDATE github_repos_v15 SET lease=NULL WHERE id=? AND lease=?').bind(repo.id,id).run();
   }
+}
+
+// Only the fixed repository and read endpoints below are available to NEXUS.
+export async function nexusGitHubEvidence(env,repo,brief,investigate=false,includeSamples=false) {
+  if(!configured(env))throw Error('GitHub indisponível');
+  let token;
+  try {token=await installationToken(env,repo.id,undefined,true);}
+  catch(error){
+    if(!(error instanceof GitHubStatusError)||![403,422].includes(error.status))throw error;
+    token=await installationToken(env,repo.id);
+  }
+  const base=repoPath(repo.name);
+  const issue=await github(base+'/issues/'+brief.issue,token);
+  if(issue.number!==brief.issue||issue.pull_request)throw Error('Issue inválido');
+  const pr=await github(base+'/pulls/'+brief.pr,token);
+  if(pr.number!==brief.pr || pr.base?.repo?.id!==repo.id || pr.head?.repo?.id!==repo.id ||
+    pr.base?.ref!==brief.baseRef || pr.head?.ref!==brief.branch || !shaPattern.test(pr.head?.sha??''))throw Error('PR fora do escopo');
+  const includesMission=value=>typeof value==='string' && value.includes('NEXUS-MISSION: '+brief.id);
+  if(!includesMission(issue.body)||!includesMission(pr.body))throw Error('Missão ausente no Issue ou PR');
+  let ci='unavailable';
+  let checks=[];
+  if(brief.checks.length) {
+    try {
+      const data=await github(base+'/commits/'+pr.head.sha+'/check-runs?filter=latest&per_page=100',token);
+      const observed=(data.check_runs??[]).filter(run=>run.head_sha===pr.head.sha);
+      const required=brief.checks.map(name=>observed.filter(run=>run.name===name && run.app?.slug==='github-actions'));
+      checks=required.map((runs,index)=>({name:brief.checks[index],
+        status:runs.some(run=>run.status==='completed'&&['failure','cancelled','timed_out','action_required'].includes(run.conclusion))?'failed':
+          runs.length===1&&runs[0].status==='completed'&&runs[0].conclusion==='success'?'passed':'pending'}));
+      ci=checks.some(check=>check.status==='failed')?'failed':checks.every(check=>check.status==='passed')?'passed':'pending';
+    }catch{ /* Existing installation might lack Checks: read. */ }
+  }
+  const files=[];
+  const samples=[];
+  let filesComplete=false, filesAvailable=false;
+  if(investigate){
+    let list;
+    try {
+      list=await github(base+'/pulls/'+brief.pr+'/files?per_page=20',token,undefined,262_144);
+    }catch{ /* The audit reports unavailable file evidence. */ }
+    if(Array.isArray(list)){
+      filesAvailable=true;
+      filesComplete=Number.isSafeInteger(pr.changed_files)&&pr.changed_files===list.length&&list.length<=20;
+      const paths=list.filter(item=>eligiblePath(item.filename) && item.status!=='removed').slice(0,20);
+      for(const item of paths){
+        files.push({path:item.filename,role:fileRole(item.filename),read:false,lines:0,disabledTestHint:false});
+      }
+      const sample=[...files].sort((a,b)=>Number(b.role==='Testes')-Number(a.role==='Testes')).slice(0,3);
+      for(const file of sample){
+        try {
+          const content=await github(base+'/contents/'+file.path.split('/').map(encodeURIComponent).join('/')+
+            '?ref='+pr.head.sha,token,undefined,32_768);
+          if(content.type!=='file'||content.encoding!=='base64'||typeof content.content!=='string')continue;
+          const source=decoder.decode(Uint8Array.from(atob(content.content),c=>c.charCodeAt(0))).slice(0,5000);
+          if(!source.trim())continue;
+          file.read=true;file.lines=source.split(/\r?\n/).length;
+          if(includeSamples&&!/[\x00]|-----BEGIN |\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA)[a-z\d_]+|(?:password|secret|api[_-]?key)\s*[:=]\s*['"][^'"]+['"]/i.test(source))
+            samples.push({path:file.path,lines:source.slice(0,2200).split(/\r?\n/).slice(0,80)});
+          file.disabledTestHint=file.role==='Testes'&&/\b(?:test|it|describe)\.(?:skip|todo|only)\s*\(/.test(source);
+        }catch{ /* Missing reads remain visible. */ }
+      }
+      const current=await github(base+'/pulls/'+brief.pr,token);
+      if(current.number!==pr.number||current.head?.sha!==pr.head.sha||current.head?.ref!==brief.branch||
+        current.head?.repo?.id!==repo.id||current.base?.repo?.id!==repo.id||current.base?.ref!==brief.baseRef)
+        throw Error('O commit do PR mudou durante a auditoria');
+    }
+  }
+  return {repo:repo.name,commit:pr.head.sha,ci,checks,files,filesAvailable,filesComplete,samples,issue:brief.issue,pr:brief.pr,
+    issueUrl:'https://github.com/'+repo.name+'/issues/'+brief.issue,
+    prUrl:'https://github.com/'+repo.name+'/pull/'+brief.pr};
 }

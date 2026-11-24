@@ -477,3 +477,119 @@ test('Cobertura escolhe alterações e avança para novos arquivos no mesmo comm
     [{id:'prior',path:'src/auth.ts',line:1}]);
   assert.deepEqual(potentialFixes(previous,[{path:'src/auth.ts',lines:['// moved','return old;']}],'current'),[]);
 });
+
+test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavaliação com novo commit', async t=>{
+  const {env,db,call,count}=setup(t);
+  const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey;
+  Object.assign(env,{GITHUB_APP_ID:'123',GITHUB_INSTALLATION_ID:'456',GITHUB_PRIVATE_KEY:key.export({type:'pkcs8',format:'pem'}),
+    GITHUB_WEBHOOK_SECRET:'test'});
+  db.exec(`INSERT INTO github_repos_v15(id,name,description,state,due)VALUES(12,'owner/repo','','active',0);
+    INSERT INTO github_inventory_v15 VALUES(12,'456','test','available',0);
+    INSERT INTO github_account_v15(singleton,installation,state,next_sync)VALUES(1,'456','active',0);`);
+  const id=crypto.randomUUID();
+  let commit='a'.repeat(40), branch='nexus-test', ci='success', modelCalls=0;
+  env.AI.run=async(_,payload)=>{
+    modelCalls++;
+    assert.match(payload.messages[1].content,/src\/cadastro\.test\.ts/);
+    return {response:{observations:[{path:'src/cadastro.ts',line:1,problem:'Estado fixo pode esconder erro.',
+      verification:'Verifique entradas diferentes.'},{path:'inventado.ts',line:999,problem:'Inventado',verification:'Ignorar'}]},
+      usage:{prompt_tokens:80,completion_tokens:90}};
+  };
+  t.mock.method(globalThis,'fetch',async address=>{
+    const {pathname,searchParams}=new URL(address);
+    const marker='NEXUS-MISSION: '+id;
+    if(pathname.endsWith('/access_tokens'))return Response.json({token:'mock-scope'});
+    if(pathname.endsWith('/issues/2'))return Response.json({number:2,body:marker});
+    if(pathname.endsWith('/pulls/8/files'))return Response.json([{filename:'src/cadastro.test.ts',status:'modified'},
+      {filename:'src/cadastro.ts',status:'modified'},{filename:'.env',status:'modified'}]);
+    if(pathname.includes('/contents/')){
+      assert.equal(searchParams.get('ref'),commit);
+      assert.doesNotMatch(pathname,/\.env/);
+      return Response.json({type:'file',encoding:'base64',content:btoa(pathname.endsWith('.test.ts')?
+        'test.skip("cadastro", () => {});':'export const cadastro = 1;')});
+    }
+    if(pathname.endsWith('/pulls/8'))return Response.json({number:8,body:marker,changed_files:3,base:{repo:{id:12},ref:'main'},
+      head:{repo:{id:12},ref:branch,sha:commit}});
+    if(pathname.includes('/check-runs'))return Response.json({check_runs:[{name:'validar',head_sha:commit,
+      app:{slug:'github-actions'},status:'completed',conclusion:ci}]});
+    throw Error('Rota inesperada');
+  });
+  const base='/nexus/missions';
+  assert.equal((await call(base,undefined,'z'.repeat(43))).status,401);
+  const spec={schema:1,id,repoId:12,issue:2,pr:8,baseRef:'main',branch,objective:'Melhorar cadastro',
+    checks:['validar'],constraints:['Somente leitura'],nonGoals:[],criteria:[{id:'cadastro',description:'Completar cadastro',
+      expectedEvidence:'Vídeo de execução'}]};
+  const created=await call(base,spec);
+  assert.equal(created.status,201);
+  assert.equal((await created.json()).mission.brief.executor,'web');
+  db.prepare("UPDATE nexus_missions_v1 SET record=json_remove(record,'$.brief.executor') WHERE id=?").run(id);
+  const legacy=(await (await call(base+'/'+id)).json()).execution;
+  assert.deepEqual(legacy,{mode:'web',issueUrl:'https://github.com/owner/repo/issues/2',
+    prUrl:'https://github.com/owner/repo/pull/8',result:null});
+  let version=0;
+  const path=base+'/'+id;
+  async function send(type,payload,status=200,id=crypto.randomUUID()) {
+    const r=await call(path+'/events',{id,type,payload,version});
+    assert.equal(r.status,status);
+    const data=await r.json();
+    if(status===200)version=data.version;
+    return data;
+  }
+  const eventId=crypto.randomUUID();
+  await send('spec_ready',undefined,200,eventId);
+  assert.equal((await send('spec_ready',undefined,200,eventId)).duplicate,true);
+  assert.equal((await send('executor',{mode:'cli'})).mission.status,'SPEC_READY');
+  assert.equal((await (await call(path)).json()).execution.mode,'cli');
+  await send('executor',{mode:'web'});
+  await send('executor',{mode:'automation'},409);
+  await send('start');
+  await send('executor',{mode:'cli'},409);
+  branch='other';await send('sync',undefined,409);branch='nexus-test';
+  await send('sync');
+  const initial=await send('audit',{model:true});
+  assert.equal(initial.mission.status,'EVIDENCE_MISSING');
+  assert.equal(initial.mission.director.model.state,'completed');
+  assert.equal(initial.mission.director.model.observations.length,1);
+  assert.equal(modelCalls,1);
+  assert.doesNotMatch(JSON.stringify(initial.mission.remote),/test\.skip|export const/);
+  await send('audit',{model:true},429);
+
+  assert.equal(initial.mission.director.verified.some(item=>item.text.includes('src/cadastro.ts')),true);
+  assert.equal(initial.mission.director.hypotheses.some(item=>item.text.includes('ignorado')),true);
+  assert.doesNotMatch(JSON.stringify(initial.mission.director),/test\.skip|export const/);
+  const url='https://github.com/owner/repo';
+  const record={commit,status:'passed',url,reason:'Observei e verifiquei as evidências no teste.'};
+  await send('attest',{...record,axis:'experience'},409);
+  await send('attest',{...record,commit:'c'.repeat(40),axis:'correctness'},409);
+  await send('revision_request',{commit,priority:'P1',location:'Tela Cadastro',why:'Controle sem nome acessível',
+    expected:'Leitor anuncia o campo',test:'Completar cadastro com leitor',url});
+  await send('start');
+  db.prepare("UPDATE nexus_missions_v1 SET record=json_set(record,'$.lastSyncAt',0) WHERE id=?").run(id);
+  await send('sync',undefined,409);
+  commit='b'.repeat(40);
+  await send('sync');
+  const dimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
+  await send('attest',{...record,commit,status:'failed',axis:'experience',functionalUrl:url,visualUrl:url,dimensions});
+  ci='failure';
+  const second=await send('audit',{model:true});
+  assert.equal(second.mission.status,'CHANGES_REQUIRED');
+  assert.equal(second.mission.director.model.state,'quota');
+  assert.equal(modelCalls,1);
+  const used=await (await call('/status')).json();
+  assert.equal(used.dailyUsed,1);
+  assert.equal((await send('approve',{commit},409)).error.length>0,true);
+  const detail=await (await call(path)).json();
+  assert.equal(detail.review.delivery,'manual');
+  assert.deepEqual(detail.execution.result,{commit,ci:'failed'});
+  assert.equal(detail.events.filter(event=>event.type==='executor').length,2);
+  assert.equal(detail.review.correctionPackage.delivery,'manual');
+  assert.equal(detail.review.correctionPackage.revision,commit);
+  assert.equal(detail.review.correctionPackage.requests.some(item=>item.location==='validar'),true);
+  assert.equal(detail.review.gate.approved,false);
+  assert.equal(detail.events.some(e=>e.type==='revision_request'),true);
+  assert.equal(count(),0);
+  db.prepare("UPDATE github_repos_v15 SET state='paused' WHERE id=12").run();
+  await send('start',undefined,409);
+  db.prepare("UPDATE github_inventory_v15 SET availability='removed' WHERE repo=12").run();
+  assert.equal((await call(path)).status,404);
+});

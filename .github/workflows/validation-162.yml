@@ -4,6 +4,8 @@ on:
   pull_request:
     branches:
       - integracao-v1.6.1
+      - integracao-v1.6.2
+      - nexus-fase-a
   workflow_dispatch:
 
 permissions:
