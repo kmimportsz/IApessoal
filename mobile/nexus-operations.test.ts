@@ -12,7 +12,7 @@ test('AutoPilot sincroniza e audita com versão devolvida pelo gateway',async()=
 });
 test('AutoPilot não audita CI pendente, não aprova, não repete falhas',async()=>{
  let calls=0;
- const result=await reviewCycle(initial,async cursor=>{calls++;return {...cursor,mission:{...cursor.mission,status:'CI_PENDING'}};});
+ const result=await reviewCycle(initial,async cursor=>{calls++;return {...cursor,version:cursor.version+1,mission:{...cursor.mission,status:'CI_PENDING'}};});
  assert.equal(calls,1);assert.equal(result.mission.status,'CI_PENDING');
  await assert.rejects(reviewCycle(initial,async()=>{throw Error('rede');}),/rede/);
  await assert.rejects(reviewCycle({...initial,mission:{id:'mission',status:'OWNER_APPROVED'}},async()=>{throw Error('não deve chamar');}),/não pode/);
@@ -24,4 +24,15 @@ test('Central conta estados reais e não sugere publicação automática',()=>{
  assert.deepEqual(deliverySummary(rows),{total:7,working:2,pending:2,decisions:1,approved:1});
  assert.match(nextAction('OWNER_APPROVED'),/Publicação é uma ação separada/);
  assert.match(nextAction('IMPLEMENTING',null),/Vincular/);
+});
+
+test('AutoPilot não prossegue com resposta de outra missão ou versão antiga',async()=>{
+ let calls=0;
+ await assert.rejects(reviewCycle(initial,async cursor=>{
+  calls++;return {...cursor,version:6,mission:{id:'other',status:'AI_AUDIT'}};
+ }),/incompatível/);
+ assert.equal(calls,1);
+ await assert.rejects(reviewCycle(initial,async cursor=>({...cursor,mission:{...cursor.mission,status:'AI_AUDIT'}})),/incompatível/);
+ await assert.rejects(reviewCycle(initial,async(cursor,type)=>({...cursor,
+  version:cursor.version+1,mission:{id:type==='sync'?'mission':'other',status:'AI_AUDIT'}})),/incompatível/);
 });
