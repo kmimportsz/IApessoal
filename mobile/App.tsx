@@ -1,5 +1,6 @@
 import { NexusPanel } from './NexusPanel';
 import { FactoryPanel } from './FactoryPanel';
+import type {FactorySession} from './factory';
 import { assessRequest, competencyChecks, contextualMemory, trustedResearchUrl } from './competence';
 import { prioritizeActions } from './autonomy';
 import { buildExcellenceReviewRequest, buildObjectiveExcellenceRequest, repositoryReadiness } from './excellence';
@@ -167,6 +168,7 @@ function PersonalApp() {
   const [calculated,setCalculated]=useState('');
   const [backupKey,setBackupKey]=useState('');
   const [backupText,setBackupText]=useState('');
+  const factorySession=useRef<FactorySession>({drafts:{}});
   const [tab, setTab] = useState<Tab>('Conversa');
   const [notice, setNotice] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -1402,7 +1404,7 @@ function PersonalApp() {
       {tab === 'Projetos' && <>
         <Text style={s.title}>Projetos</Text>
         {settings.url===trackingGateway && <NexusPanel request={request} onNavigate={()=>panels.current?.scrollTo({y:0,animated:false})}/>}
-        {db && <FactoryPanel db={db}/>}
+        {db && <FactoryPanel db={db} session={factorySession.current}/>}
         {github && <View style={s.card}>
           <Text style={s.section}>Repositórios GitHub</Text>
           {!metrics && <View style={s.card}>
