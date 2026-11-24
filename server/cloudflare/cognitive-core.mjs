@@ -4,7 +4,7 @@
  * it never becomes a system instruction and cannot grant tool permissions.
  */
 const domains = Object.freeze([
-  {id:'negocios', re:/\b(faturamento|capital de giro|lucro|margem|precific\\w*|clientes?|vendas?|despesas?|custos?|investimento|fornecedor|fluxo de caixa|contratar|salarios?|receita mensal)\b|r\s*\$/i,
+  {id:'negocios', re:/\b(faturamento|capital de giro|lucro|margem|precific\w*|clientes?|vendas?|despesas?|custos?|investimento|fornecedor|fluxo de caixa|contratar|salarios?|receita mensal)\b|r\s*\$/i,
     guide:'Separe faturamento, margem, lucro e caixa. Valide a aritmetica e explicite prazo, premissas, despesas, riscos e cenarios. Nao descreva metas como realistas sem condicoes verificaveis.'},
   {id:'engenharia', re:/\b(codigo|programa|github|commit|deploy|bug|erro de compilacao|api|typescript|javascript|react|sqlite|supabase|firebase|cloudflare|servidor|banco de dados|autenticacao|seguranca do sistema|integracao)\b/i,
     guide:'Separe causa comprovada de hipotese. Quando o contexto autorizado incluir arquivo, log ou teste, cite sua evidencia. Nao alegue acesso a repositorios, execucao de testes ou deploy sem ferramenta real.'},
