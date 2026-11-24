@@ -1,4 +1,5 @@
 import { assessRequest, competencyChecks, contextualMemory, trustedResearchUrl } from './competence';
+import { prioritizeActions } from './autonomy';
 import * as WebBrowser from 'expo-web-browser';
 import { githubLink } from './github-links';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -938,6 +939,30 @@ function PersonalApp() {
     </View>;
   }
 
+  function trackFinding(run: GitHubRun, repo: GitHubRepo) {
+    const finding=run.finding;
+    if(!finding)return;
+    if(!tracking?.enabled) {
+      setNotice('Ative o acompanhamento em Projetos antes de criar uma revisão.');
+      go('Projetos');
+      return;
+    }
+    const title=('Investigar '+repo.name+': '+finding.path.split('/').at(-1)).slice(0,80);
+    const pending=('Reavaliar possível achado em '+repo.name+' no commit '+run.commit_sha.slice(0,12)+
+      ', arquivo '+finding.path+', linha '+finding.line+'. '+finding.problem).slice(0,240);
+    if(tracking.projects.some(project=>project.active && project.title===title && project.pending===pending)){
+      setNotice('Esta investigação já possui um acompanhamento ativo.');
+      return;
+    }
+    confirm('Criar acompanhamento?', 'Registrar uma revisão desta descoberta para daqui a 24 horas? O projeto será cadastrado no gateway autorizado. Nenhum código será alterado.',async()=>{
+      await change('/initiative/projects','POST',{
+        id:randomUUID(),title,pending,due:Date.now()+86_400_000,
+      });
+      setNotice('Acompanhamento cadastrado. Consulte Projetos para gerenciar permissões e revisões.');
+      go('Projetos');
+    });
+  }
+
   function findingCard(run: GitHubRun, repo: GitHubRepo) {
     const f=run.finding;
     if(!f)return null;
@@ -959,14 +984,14 @@ function PersonalApp() {
       <Text style={s.text}>Sugestão · {f.suggestion}</Text>
       <View style={s.row}>
         <Button label="Discutir" onPress={()=>discussFinding(run)}/>
+        {run.finding_state==='new' && tracking?.enabled && <Button label="Acompanhar em 24h" onPress={()=>trackFinding(run,repo)}/>}
         {run.finding_state==='new' && <Button label="Dispensar" onPress={()=>void perform(()=>githubAction('/github/finding',{id:run.finding_id,state:'dismissed'}))}/>}
         {run.finding_state!=='resolved' && <Button label="Marcar como resolvida" onPress={()=>void perform(()=>githubAction('/github/finding',{id:run.finding_id,state:'resolved'}))}/>}
       </View>
     </View>;
   }
 
-  const githubInitiative=github?.history.find(run=>run.finding_state==='new'&&['crítica','alta','média'].includes(run.finding?.priority??''));
-  const githubInitiativeRepo=github?.repos.find(repo=>repo.id===githubInitiative?.repo);
+  const priorityItems=prioritizeActions(github?.history??[],automation?.entries??[]);
 
   function useInitiative(item: Initiative) {
     const result = automation?.entries.find(entry => entry.project_id === item.id && entry.cycle === (item.cycle ?? 0));
@@ -1172,7 +1197,43 @@ function PersonalApp() {
             </>}
           </View>}
           ListFooterComponent={<View style={s.timelineFooter}>
-            {githubInitiative && githubInitiativeRepo && findingCard(githubInitiative,githubInitiativeRepo)}
+            {priorityItems.length>0 && <View style={s.card}>
+              <Text style={s.kicker}>CENTRAL DE PRIORIDADES · ANÁLISES AUTORIZADAS</Text>
+              <Text style={s.muted}>A IA identificou ações que merecem atenção. Nenhuma alteração externa será executada sem sua autorização.</Text>
+              {priorityItems.map(item=>{
+                if(item.kind==='github'){
+                  const run=github?.history.find(r=>r.id===item.id);
+                  const repo=github?.repos.find(r=>r.id===run?.repo);
+                  if(!run?.finding || !repo)return null;
+                  return <View key={'priority:'+item.id} style={s.report}>
+                    <Text style={s.kicker}>{repo.name} · {run.finding.priority.toUpperCase()}</Text>
+                    <Text style={s.label}>{run.finding.problem}</Text>
+                    <Text style={s.muted}>{item.reason} · Confiança {run.finding.confidence}. Hipótese sujeita a validação.</Text>
+                    <View style={s.row}>
+                      <Button label="Investigar" onPress={()=>discussFinding(run)}/>
+                      {tracking?.enabled && <Button label="Acompanhar 24h" onPress={()=>trackFinding(run,repo)}/>}
+                      {codeLink('Código',githubLink(repo.name,run.commit_sha,run.finding.path,run.finding.line))}
+                    </View>
+                  </View>;
+                }
+                const analysis=automation?.entries.find(a=>a.run_id===item.id);
+                if(!analysis?.summary)return null;
+                return <View key={'priority:'+item.id} style={s.report}>
+                  <Text style={s.kicker}>PROJETO · REVISÃO AUTORIZADA</Text>
+                  <Text style={s.label}>{analysis.title}</Text>
+                  <Text style={s.muted}>{analysis.summary}</Text>
+                  <Text style={s.text}>{analysis.action}</Text>
+                  <View style={s.row}>
+                    <Button label="Discutir próximo passo" onPress={()=>{
+                      setContext([analysis.title,analysis.summary,analysis.action].filter(Boolean).join('\n'));
+                      setContextMemory(undefined);
+                      go('Conversa');
+                    }}/>
+                    <Button label="Ver projeto" onPress={()=>go('Projetos')}/>
+                  </View>
+                </View>;
+              })}
+            </View>}
             {newestInitiative && <View style={s.card}>
               <Text style={s.kicker}>{initiativeResult?.summary ? 'ANÁLISE CONCLUÍDA' :
                 initiativeResult?.state === 'started' ? 'ANÁLISE EM PROCESSAMENTO' :
