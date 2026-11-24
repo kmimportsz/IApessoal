@@ -486,7 +486,8 @@ test('NEXUS: issue e PR vinculados ao SHA, revis√£o de UX bloqueante e reavalia√
   db.exec(`INSERT INTO github_repos_v15(id,name,description,state,due)VALUES(12,'owner/repo','','active',0);
     INSERT INTO github_inventory_v15 VALUES(12,'456','test','available',0);
     INSERT INTO github_account_v15(singleton,installation,state,next_sync)VALUES(1,'456','active',0);`);
-  const id=crypto.randomUUID();
+  const id='abcdefab-1234-4abc-8def-abcdefabcdef';
+  let markerId=id.toUpperCase();
   let commit='a'.repeat(40), branch='nexus-test', ci='success', modelCalls=0;
   env.AI.run=async(_,payload)=>{
     modelCalls++;
@@ -497,7 +498,7 @@ test('NEXUS: issue e PR vinculados ao SHA, revis√£o de UX bloqueante e reavalia√
   };
   t.mock.method(globalThis,'fetch',async address=>{
     const {pathname,searchParams}=new URL(address);
-    const marker='NEXUS-MISSION: '+id;
+    const marker='NEXUS-MISSION: '+markerId;
     if(pathname.endsWith('/access_tokens'))return Response.json({token:'mock-scope'});
     if(pathname.endsWith('/issues/2'))return Response.json({number:2,body:marker});
     if(pathname.endsWith('/pulls/8/files'))return Response.json([{filename:'src/cadastro.test.ts',status:'modified'},
@@ -523,6 +524,9 @@ test('NEXUS: issue e PR vinculados ao SHA, revis√£o de UX bloqueante e reavalia√
   assert.equal((await call('/nexus/prepare',prepare,'z'.repeat(43))).status,401);
   assert.equal((await call('/nexus/prepare',{...prepare,repoId:999})).status,403);
   assert.equal((await call('/nexus/prepare',{...prepare,checks:[]})).status,400);
+  markerId=id.toUpperCase()+'\nNEXUS-MISSION: '+id;
+  assert.equal((await call('/nexus/prepare',prepare)).status,409);
+  markerId=id.toUpperCase();
   const preparedResponse=await call('/nexus/prepare',prepare);
   assert.equal(preparedResponse.status,200);
   const prepared=await preparedResponse.json();
