@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {emptyProfile,saveProfile,decodeProfiles,buildPrompt,mergeProfiles,validPalette,addLesson,designPalettes} from './factory.ts';
+import {emptyProfile,saveProfile,decodeProfiles,buildPrompt,mergeProfiles,validPalette,addLesson,designPalettes,quickProfile} from './factory.ts';
 const a={...emptyProfile('a'),name:'Projeto A',purpose:'Atender clientes',visual:'Vermelho e branco',preferences:'Mobile first'};
 const b={...emptyProfile('b'),name:'Projeto B',purpose:'Agendar serviços',visual:'Verde e preto',preferences:'Fluxo acessível'};
 test('Perfis separados e edição preserva outro projeto',()=>{
@@ -49,4 +49,14 @@ test('Studio registra paleta provisória e Knowledge mantém lições isoladas e
  assert.match(prompt,/não é aprovação final/);assert.match(prompt,/Testar cadastro novamente/);
  assert.doesNotMatch(buildPrompt(b,'Criar tela'),/Testar cadastro novamente/);
  assert.throws(()=>addLesson(a,{...lesson,reference:'https://user:pass@example.com/'}));
+});
+
+test('Pedido único prepara rascunho novo sem exigir formulário',()=>{
+ const ask='Quero um sistema de agendamento.';
+ const p=quickProfile(emptyProfile('novo'),ask,'new');
+ assert.match(p.name,/^Rascunho:/);assert.match(p.purpose,/provisório/);
+ assert.equal(p.visual,'');assert.match(buildPrompt(p,ask),/sistema de agendamento/);
+ assert.deepEqual(quickProfile(a,ask,'change'),a);
+ assert.throws(()=>quickProfile(emptyProfile('novo'),ask,'change'));
+ assert.throws(()=>quickProfile(emptyProfile('novo'),'  ','new'));
 });
