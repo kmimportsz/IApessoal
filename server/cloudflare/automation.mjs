@@ -88,16 +88,17 @@ export async function runProjectAnalyses(env,{now=new Date(),models,estimate,cha
       {role:'user',content:context},
     ];
     const reserve=estimate(model,messages);
+    const preview=env.PREVIEW_ISOLATED==='true';
     const claimed=await env.DB.prepare(`
       INSERT INTO ai_calls_v12(id,day,month,created,state,model,neurons)
       SELECT ?,?,?,?,'started',?,? WHERE EXISTS (${permission})
-      AND (SELECT COUNT(*) FROM ai_calls_v12 WHERE day=?)<100
-      AND (SELECT COALESCE(SUM(neurons),0) FROM ai_calls_v12 WHERE day=?)+?<=5000
+      AND (SELECT COUNT(*) FROM ai_calls_v12 WHERE day=?)<?
+      AND (SELECT COALESCE(SUM(neurons),0) FROM ai_calls_v12 WHERE day=?)+?<=?
       AND (SELECT COUNT(*) FROM ai_calls_v12 c JOIN project_analysis_v15 a ON a.run_id=c.id WHERE c.day=?)<?
       AND (SELECT COALESCE(SUM(c.neurons),0) FROM ai_calls_v12 c JOIN project_analysis_v15 a ON a.run_id=c.id WHERE c.day=?)+?<=?
       AND NOT EXISTS(SELECT 1 FROM ai_calls_v12 c JOIN project_analysis_v15 a ON a.run_id=c.id WHERE a.project_id=? AND c.state='started' AND c.created>=?)
       RETURNING id
-    `).bind(id,day,month,cutoff,model.id,reserve,row.project_id,day,day,reserve,day,maxDaily,day,reserve,maxNeurons,row.project_id,cutoff-20*60_000).first();
+    `).bind(id,day,month,cutoff,model.id,reserve,row.project_id,day,preview?6:100,day,reserve,preview?950:5000,day,preview?1:maxDaily,day,reserve,maxNeurons,row.project_id,cutoff-20*60_000).first();
     if(!claimed){
       await env.DB.prepare("UPDATE project_analysis_v15 SET state='skipped' WHERE run_id=?").bind(id).run();
       continue;

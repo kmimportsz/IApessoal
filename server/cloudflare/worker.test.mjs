@@ -278,6 +278,7 @@ test('Automação agenda somente projetos autorizados e faz no máximo uma infer
   env.AI.run=async (_,data)=>{
     calls++;
     assert.match(data.messages[1].content,/Comparar duas propostas/);
+    assert.match(data.messages[0].content,/nao diga que o projeto esta finalizado/);
     return {choices:[{message:{content:JSON.stringify({relevant:true,summary:'Compare custo total.',action:'Peça dois orçamentos.'})},finish_reason:'stop'}]};
   };
   await Promise.all([worker.scheduled({},env),worker.scheduled({},env)]);
@@ -285,6 +286,11 @@ test('Automação agenda somente projetos autorizados e faz no máximo uma infer
   const receipt=await (await call('/automation')).json();
   assert.equal(receipt.entries[0].state,'ready');
   assert.equal(receipt.entries[0].action,'Peça dois orçamentos.');
+  assert.equal((await call('/excellence/project/'+id,undefined,'z'.repeat(43))).status,401);
+  const director=await (await call('/excellence/project/'+id)).json();
+  assert.equal(director.gate.approved,false);
+  assert.equal(director.analysisState,'ready');
+  assert.equal(calls,1);
   assert.doesNotMatch(db.prepare('SELECT sealed FROM project_analysis_v15').get().sealed,/orçamentos/);
 });
 

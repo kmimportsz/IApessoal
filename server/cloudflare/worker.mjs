@@ -1,3 +1,4 @@
+import { evaluateQualityGate } from './excellence-engine.mjs';
 import { githubRoute, githubWebhook, runGitHubMonitor, syncGitHubInventory } from './github.mjs';
 import { backupRoute } from './backup.mjs';
 import { automationRoute, runProjectAnalyses } from './automation.mjs';
@@ -68,7 +69,9 @@ async function authorized(request, env) {
   const match = /^Bearer ([A-Za-z0-9_-]{32,128})$/.exec(request.headers.get('Authorization') ?? '');
   if (!match) return false;
   const owner = env.DB && await env.DB.prepare('SELECT token_hash FROM gateway_owner WHERE singleton=1').first();
-  return matchesDigest(match[1], owner?.token_hash ?? env.OWNER_SHA256);
+  const fallback=env.PREVIEW_ISOLATED==='true' && !(Number(env.PREVIEW_VALIDATION_UNTIL)>Date.now())
+    ? undefined : env.OWNER_SHA256;
+  return matchesDigest(match[1], owner?.token_hash ?? fallback);
 }
 
 async function pair(request, env) {
@@ -143,7 +146,12 @@ async function receipt(env, id, includeReply) {
   return info;
 }
 
+function limits(env) {
+  return env.PREVIEW_ISOLATED==='true'?{calls:6,neurons:950}:{calls:dailyCalls,neurons:dailyNeurons};
+}
+
 async function chat(request, env, now, day, month) {
+  const quota=limits(env);
   const data = await readChat(request);
   if (!data) return error('Mensagem inválida. O limite é de 6.000 caracteres, incluindo contexto.', 400);
   if (data.route !== 'local' || !enabled(env)) return error('Modelo desativado no servidor.', 503);
@@ -168,7 +176,7 @@ async function chat(request, env, now, day, month) {
   const reserve = reservedNeurons(model, messages);
   const sealed = await seal(data.prompt, env.RECOVERY_KEY, 'prompt:' + data.id);
   const inserted = await env.DB.prepare(claim)
-    .bind(data.id, day, month, now.getTime(), model.id, reserve, data.id, day, dailyCalls, day, reserve, dailyNeurons).first();
+    .bind(data.id, day, month, now.getTime(), model.id, reserve, data.id, day, quota.calls, day, reserve, quota.neurons).first();
   if (!inserted) {
     const duplicate = await receipt(env, data.id, true);
     if (duplicate) return json(duplicate, duplicate.state === 'processing' ? 202 : 200);
@@ -288,6 +296,17 @@ export default {
         try {return json({...await searchPublic(query),dailyUsed:reserved.calls,dailyLimit:searchLimit});}
         catch {return error('A fonte pública não respondeu. Tente mais tarde.',502);}
       }
+      const director=/^\/excellence\/project\/([^/]+)$/.exec(pathname);
+      if(request.method==='GET' && director){
+        if(!idPattern.test(director[1]))return error('Projeto inválido.',400);
+        const project=await env.DB.prepare('SELECT id FROM tracked_projects WHERE id=? AND demo=0').bind(director[1]).first();
+        if(!project)return error('Projeto não encontrado.',404);
+        // No authenticated evidence adapter or release authorization exists yet.
+        const gate=evaluateQualityGate();
+        const analysis=await env.DB.prepare(`SELECT state FROM project_analysis_v15 WHERE project_id=?
+          ORDER BY created DESC LIMIT 1`).bind(project.id).first();
+        return json({gate,analysisState:analysis?.state??null});
+      }
       if (pathname==='/github' || pathname.startsWith('/github/')) return await githubRoute({env,path:pathname,method:request.method,read:limit=>readJson(request,limit),now:now.getTime()});
       if(pathname==='/backup/projects') return backupRoute({db:env.DB,method:request.method,read:limit=>readJson(request,limit)});
       if (pathname === '/automation' || pathname.startsWith('/automation/')) {
@@ -304,7 +323,7 @@ export default {
         ).bind(day).first();
         return json({month, limit: 2000, reserved: 0, inputTokens: 0, outputTokens: 0,
           paid: false, local: enabled(env), localLabel: 'IA gratuita · seleção automática',
-          dailyLimit: dailyCalls, dailyUsed: usage?.attempts ?? 0, neuronLimit: dailyNeurons,
+          dailyLimit: limits(env).calls, dailyUsed: usage?.attempts ?? 0, neuronLimit: limits(env).neurons,
           neuronsUsed: usage?.neurons ?? 0});
       }
       if (request.method === 'GET' && pathname === '/audit' && env.DB) {

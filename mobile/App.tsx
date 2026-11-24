@@ -472,13 +472,10 @@ function PersonalApp() {
   function clearContext() { setContext(''); setContextMemory(undefined); }
 
   function confirmSend(job: Job) {
-    // Mensagens comuns nao exigem segunda confirmacao. Custos pagos continuam protegidos.
-    if (job.route === 'paid') {
-      confirm('Confirmar envio pago?', 'Esta chamada pode consumir seu orçamento. Confira o conteúdo e o contexto antes de enviar.',
-        () => send(job));
-    } else {
-      void perform(() => send(job));
-    }
+    if (job.route === 'paid' || job.prompt.startsWith('Contexto escolhido pelo usuário:')) {
+      confirm(job.route==='paid'?'Confirmar envio pago?':'Enviar com contexto?',
+        'Confira a mensagem e o contexto que serão enviados ao gateway.',()=>send(job));
+    } else void perform(()=>send(job));
   }
 
   useEffect(()=>{
@@ -951,8 +948,8 @@ function PersonalApp() {
     }
     setPrompt(message);
     setMenu(false);
-    setNotice('Auditoria preparada. Revise e envie quando desejar; nenhuma inferência foi iniciada.');
     go('Conversa');
+    setNotice('Auditoria preparada. Revise e envie quando desejar.');
   }
 
   function trackFinding(run: GitHubRun, repo: GitHubRepo) {
@@ -1560,7 +1557,13 @@ function PersonalApp() {
               }}/>}
               <Button label="Editar plano" disabled={!tracking.enabled} onPress={()=>setProjectEdit(item)}/>
               <Button label="Analisar na conversa" onPress={()=>{setContext([item.title,item.description,item.objective,item.pending].filter(Boolean).join('\n'));setContextMemory(undefined);go('Conversa');}}/>
-              <Button label="Diretora: exigir excelência" onPress={()=>requestDirectorReview(buildObjectiveExcellenceRequest(item))}/>
+              <Button label="Diretora: exigir excelência" onPress={()=>void perform(async()=>{
+                const response=await request('/excellence/project/'+encodeURIComponent(item.id));
+                if(!response.ok)throw Error('Não foi possível consultar os critérios da Diretora.');
+                const data=await response.json() as {gate:{explanation:string;approved:boolean};analysisState:string|null};
+                requestDirectorReview(buildObjectiveExcellenceRequest(item)+'\n\nEstado verificado no gateway: '+
+                  data.gate.explanation+(data.analysisState?' Última revisão agendada: '+data.analysisState+'.':''));
+              })}/>
               {item.status==='done' && <Text style={s.muted}>Conclusão registrada pelo usuário; não equivale a uma certificação de qualidade.</Text>}
               <Button label={item.active ? 'Pausar objetivo' : 'Retomar objetivo'} disabled={item.status==='paused'||item.status==='done'} onPress={() =>
                 void perform(() => change('/initiative/projects','PATCH',{id:item.id,active:!item.active}))} />
@@ -1676,6 +1679,11 @@ function PersonalApp() {
       </>}
       {tab === 'Ajustes' && <>
         <Text style={s.title}>Ajustes</Text>
+        <View style={s.card}>
+          <Text style={s.label}>Ambiente isolado da prévia 1.6.2</Text>
+          <Text style={s.muted}>Use a credencial própria desta prévia. Dados e credenciais de outras versões ficam em seus ambientes.</Text>
+          <Button label="Preencher endereço da prévia" onPress={()=>setUrl(trackingGateway)}/>
+        </View>
         {update.enabled && <Text style={s.muted}>Atualizações · {update.channel ?? 'Canal local'} · {update.runtimeVersion?.slice(0, 12)}</Text>}
         {update.emergencyLaunch && <Text style={s.muted}>O aplicativo iniciou com a versão de recuperação.</Text>}
         {update.enabled && (update.available || update.pending || update.phase !== 'idle' || !!update.failure) &&
@@ -1689,14 +1697,6 @@ function PersonalApp() {
               onPress={() => update.pending ? void update.apply(canRestart, restarting) : void update.download()} />
           </View>}
         <View style={s.card}><Text style={s.section}>Gateway de modelos</Text>
-          {[oldGateway, upgradedGateway, recoveryGateway, previousGateway, v14Gateway].includes(settings.url) && <Button label="Conectar ao gateway 1.5" primary onPress={() =>
-            confirm('Usar o gateway 1.5?', 'A mesma credencial será usada no novo endereço oficial. Mensagens já vinculadas ao endereço anterior continuam na fila.',
-              async () => {
-                const credentials = {...settings, url: trackingGateway};
-                await SecureStore.setItemAsync('gatewayCredentials', JSON.stringify(credentials));
-                setSettings(credentials); setUrl(trackingGateway); setUsage(undefined); setRemoteAudit([]);
-                await audit(db, 'Gateway 1.5 selecionado');
-              })} />}
           {typeof probe?.usage?.dailyUsed === 'number' && <Text style={s.muted}>
             {probe.usage.dailyUsed}/{probe.usage.dailyLimit} tentativas hoje · {probe.usage.neuronsUsed}/{probe.usage.neuronLimit} Neurons
           </Text>}
@@ -1705,6 +1705,7 @@ function PersonalApp() {
           <View style={s.row}>
             <Button label="Salvar conexão" primary onPress={() => void perform(async () => {
               const address = endpoint(url);
+              if(address!==trackingGateway)throw Error('Use o endereço do gateway isolado da prévia 1.6.2.');
               const owner = token.trim();
               if (owner.length < 32) throw new Error('Informe a credencial do gateway com pelo menos 32 caracteres.');
               const credentials = { url: address, token: owner };
