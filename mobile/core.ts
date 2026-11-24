@@ -56,6 +56,20 @@ export function preferenceCandidate(text: string): string | undefined {
   return value;
 }
 
+/** Learn only from an explicit first-person statement, as a private editable draft. */
+export function learningCandidate(text:string):{kind:Category;body:string}|undefined {
+  const value=text.trim();
+  const preference=preferenceCandidate(value);
+  if(preference)return {kind:'Preferência',body:preference};
+  if(value.length>240||/[\r\n@]|https?:|\b\d{5,}\b/i.test(value)||
+    /\b(senha|cpf|token|credencial|cart[aã]o|segredo|endere[cç]o|telefone|sa[uú]de|chave privada)\b/iu.test(value))return;
+  const match=/^(aprendi que|decidi que|meu objetivo [eé]|a li[cç][aã]o foi|o erro foi)\s+(.{8,200})$/iu.exec(value);
+  if(!match)return;
+  const prefix=normalize(match[1]);
+  const kind:Category=prefix==='decidi que'?'Decisão':prefix==='meu objetivo e'?'Objetivo':prefix==='o erro foi'?'Erro e solução':'Aprendizado';
+  return {kind,body:value};
+}
+
 export type Connection = 'unconfigured' | 'offline' | 'checking' | 'unreachable' | 'disabled' | 'auth' | 'online';
 export function connectionState(configured: boolean, connected: boolean | null, status: number | undefined,
   routeEnabled?: boolean): Connection {
