@@ -98,5 +98,6 @@ test('Aprendizado só propõe declarações explícitas do usuário, nunca grava
  assert.equal(learningCandidate('O erro foi publicar sem teste.')?.kind,'Erro e solução');
  assert.equal(learningCandidate('Aprendi que minha senha é exemplo.'),undefined);
  assert.equal(learningCandidate('Decidi que meu token é secreto.'),undefined);
+ assert.equal(learningCandidate('Prefiro o token azul.'),undefined);
  assert.equal(learningCandidate('A IA disse que aprendi que isso funciona.'),undefined);
 });
