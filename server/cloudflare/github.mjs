@@ -560,7 +560,7 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
 }
 
 // Only the fixed repository and read endpoints below are available to NEXUS.
-export async function nexusGitHubEvidence(env,repo,brief) {
+export async function nexusGitHubEvidence(env,repo,brief,investigate=false) {
   if(!configured(env))throw Error('GitHub indisponível');
   let token;
   try {token=await installationToken(env,repo.id,undefined,true);}
@@ -577,16 +577,51 @@ export async function nexusGitHubEvidence(env,repo,brief) {
   const includesMission=value=>typeof value==='string' && value.includes('NEXUS-MISSION: '+brief.id);
   if(!includesMission(issue.body)||!includesMission(pr.body))throw Error('Missão ausente no Issue ou PR');
   let ci='unavailable';
+  let checks=[];
   if(brief.checks.length) {
     try {
       const data=await github(base+'/commits/'+pr.head.sha+'/check-runs?filter=latest&per_page=100',token);
       const observed=(data.check_runs??[]).filter(run=>run.head_sha===pr.head.sha);
       const required=brief.checks.map(name=>observed.filter(run=>run.name===name && run.app?.slug==='github-actions'));
-      ci=required.some(runs=>runs.some(run=>run.status==='completed'&&run.conclusion==='failure'))?'failed':
-        required.every(runs=>runs.length===1&&runs[0].status==='completed'&&runs[0].conclusion==='success')?'passed':'pending';
+      checks=required.map((runs,index)=>({name:brief.checks[index],
+        status:runs.some(run=>run.status==='completed'&&['failure','cancelled','timed_out','action_required'].includes(run.conclusion))?'failed':
+          runs.length===1&&runs[0].status==='completed'&&runs[0].conclusion==='success'?'passed':'pending'}));
+      ci=checks.some(check=>check.status==='failed')?'failed':checks.every(check=>check.status==='passed')?'passed':'pending';
     }catch{ /* Existing installation might lack Checks: read. */ }
   }
-  return {repo:repo.name,commit:pr.head.sha,ci,issue:brief.issue,pr:brief.pr,
+  const files=[];
+  let filesComplete=false, filesAvailable=false;
+  if(investigate){
+    let list;
+    try {
+      list=await github(base+'/pulls/'+brief.pr+'/files?per_page=20',token,undefined,262_144);
+    }catch{ /* The audit reports unavailable file evidence. */ }
+    if(Array.isArray(list)){
+      filesAvailable=true;
+      filesComplete=Number.isSafeInteger(pr.changed_files)&&pr.changed_files===list.length&&list.length<=20;
+      const paths=list.filter(item=>eligiblePath(item.filename) && item.status!=='removed').slice(0,20);
+      for(const item of paths){
+        files.push({path:item.filename,role:fileRole(item.filename),read:false,lines:0,disabledTestHint:false});
+      }
+      const sample=[...files].sort((a,b)=>Number(b.role==='Testes')-Number(a.role==='Testes')).slice(0,3);
+      for(const file of sample){
+        try {
+          const content=await github(base+'/contents/'+file.path.split('/').map(encodeURIComponent).join('/')+
+            '?ref='+pr.head.sha,token,undefined,32_768);
+          if(content.type!=='file'||content.encoding!=='base64'||typeof content.content!=='string')continue;
+          const source=decoder.decode(Uint8Array.from(atob(content.content),c=>c.charCodeAt(0))).slice(0,5000);
+          if(!source.trim())continue;
+          file.read=true;file.lines=source.split(/\r?\n/).length;
+          file.disabledTestHint=file.role==='Testes'&&/\b(?:test|it|describe)\.(?:skip|todo|only)\s*\(/.test(source);
+        }catch{ /* Missing reads remain visible. */ }
+      }
+      const current=await github(base+'/pulls/'+brief.pr,token);
+      if(current.number!==pr.number||current.head?.sha!==pr.head.sha||current.head?.ref!==brief.branch||
+        current.head?.repo?.id!==repo.id||current.base?.repo?.id!==repo.id||current.base?.ref!==brief.baseRef)
+        throw Error('O commit do PR mudou durante a auditoria');
+    }
+  }
+  return {repo:repo.name,commit:pr.head.sha,ci,checks,files,filesAvailable,filesComplete,issue:brief.issue,pr:brief.pr,
     issueUrl:'https://github.com/'+repo.name+'/issues/'+brief.issue,
     prUrl:'https://github.com/'+repo.name+'/pull/'+brief.pr};
 }

@@ -38,6 +38,39 @@ function assessment(m,ownerApproved=false) {
   return {...gate,approved:gate.blockers.length===0,state:gate.blockers.length?'blocked':'approved-for-review'};
 }
 
+export function directorReport(remote,now) {
+  const files=remote.files??[];
+  const checked=files.filter(file=>file.read);
+  const verified=[
+    {text:'Issue e PR correspondem à missão, ao repositório e ao commit indicado.',url:remote.prUrl},
+    ...(remote.checks??[]).filter(check=>check.status!=='pending').map(check=>({
+      text:check.name+': '+(check.status==='passed'?'sucesso registrado no GitHub Actions':'falha registrada no GitHub Actions'),
+      url:remote.prUrl+'/checks',
+    })),
+    ...checked.map(file=>({text:file.path+' · '+file.lines+' linhas na amostra',
+      url:'https://github.com/'+remote.repo+'/blob/'+remote.commit+'/'+file.path.split('/').map(encodeURIComponent).join('/')})),
+  ];
+  const hypotheses=checked.filter(file=>file.disabledTestHint).map(file=>({
+    text:'Há uma construção compatível com teste ignorado ou executado de forma exclusiva em '+file.path+
+      '. Confirme se pertence ao código executado e se cobre o comportamento alterado.',
+  }));
+  if(files.some(file=>file.role!=='Testes')&&!files.some(file=>file.role==='Testes')&&remote.filesAvailable)
+    hypotheses.push({text:'A lista consultada inclui alterações sem arquivo de teste correspondente. Confirme onde esses comportamentos são verificados.'});
+  if(files.some(file=>file.path.startsWith('.github/workflows/')))
+    hypotheses.push({text:'O PR altera a definição dos workflows. Revise quais etapas foram preservadas antes de confiar no resultado verde.'});
+  if(checked.some(file=>['Autenticação e acesso','Persistência'].includes(file.role)))
+    hypotheses.push({text:'Há alterações em um caminho de acesso ou persistência. Confira o efeito sobre autorização, dados anteriores e recuperação.'});
+  const requests=(remote.checks??[]).filter(check=>check.status==='failed').map(check=>({
+    priority:'P1',location:check.name,why:'O GitHub Actions registrou falha neste commit.',
+    expected:'Corrigir a causa e obter sucesso no check obrigatório para o novo SHA.',
+    test:'Reexecutar '+check.name+' e vincular o resultado ao novo commit.',url:remote.prUrl+'/checks',
+  }));
+  return {commit:remote.commit,createdAt:now,verified,hypotheses,requests,ci:remote.ci,
+    limits:[...(!remote.filesAvailable?['A lista de arquivos não estava disponível.']:
+      !remote.filesComplete?['A lista de arquivos é parcial.']:[]),
+      'A inspeção é amostral e não executa código. A experiência real ainda exige prova funcional e visual.']};
+}
+
 export function transition(m,event,remote,now) {
   const {type,payload={}}=event;
   const next=structuredClone(m);
@@ -51,7 +84,7 @@ export function transition(m,event,remote,now) {
   else if(type==='sync' && from('IMPLEMENTING','CI_PENDING','AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER') && remote){
     if(m.status==='IMPLEMENTING' && m.iteration>1 && remote.commit===m.revision)
       throw Error('A revisão solicitada exige um novo commit.');
-    if(remote.commit!==m.revision){next.evidence={};next.criteria={};next.findings=[];next.ownerApproval=null;}
+    if(remote.commit!==m.revision){next.evidence={};next.criteria={};next.findings=[];next.ownerApproval=null;next.director=null;}
     next.revision=remote.commit;next.remote=remote;
     const changed=remote.commit!==m.revision||remote.ci!==m.remote?.ci;
     if(changed||from('IMPLEMENTING'))next.status=remote.ci==='pending'?'CI_PENDING':'AI_AUDIT';
@@ -69,8 +102,13 @@ export function transition(m,event,remote,now) {
     else throw Error('Critério inválido.');
     next.status='AI_AUDIT';next.ownerApproval=null;
   }else if(type==='audit' && from('AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER')){
-    const gate=assessment(m,true);
-    next.status=gate.approved?'READY_FOR_OWNER':m.remote?.ci==='failed'||
+    if(remote){
+      if(remote.commit!==m.revision)throw Error('O PR mudou. Confira o novo commit antes de auditar.');
+      next.remote=remote;
+      next.director=directorReport(remote,now);
+    }
+    const gate=assessment(next,true);
+    next.status=gate.approved?'READY_FOR_OWNER':next.remote?.ci==='failed'||
       Object.values({...m.evidence,...m.criteria}).some(item=>item.status==='failed')?'CHANGES_REQUIRED':'EVIDENCE_MISSING';
   }else if(type==='revision_request' && from('AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER','CHANGES_REQUIRED') &&
     payload.commit===m.revision && m.revision && ['P0','P1','P2'].includes(payload.priority) &&
@@ -139,7 +177,9 @@ export async function nexusRoute({env,path,method,read,now}) {
       .bind(id).all()).results.map(item=>JSON.parse(item.record));
     return reply({mission:m,version:row.version,events,review:{schema:1,missionId:id,commit:m.revision,
       repository:m.repository,status:m.status,gate:assessment(m,m.status==='OWNER_APPROVED'),requests:m.findings,criteria:m.criteria,evidence:m.evidence,
-      issue:m.remote?.issueUrl,pr:m.remote?.prUrl,delivery:'manual'}});
+      issue:m.remote?.issueUrl,pr:m.remote?.prUrl,delivery:'manual',director:m.director??null,
+      correctionPackage:{schema:1,kind:'nexus.revision_request',delivery:'manual',missionId:id,revision:m.revision,
+        repository:m.repository,branch:m.brief.branch,requests:[...m.findings,...(m.director?.requests??[])]}}});
   }
   if(method!=='POST'||!match[3])return fail('Rota inexistente.',404);
   if(repo.state!=='active')return fail('Repositório pausado.',409);
@@ -151,11 +191,12 @@ export async function nexusRoute({env,path,method,read,now}) {
   if(duplicate && duplicate.mission!==id)return fail('Evento já vinculado a outra missão.',409);
   if(duplicate)return reply({duplicate:true,mission:m,version:row.version});
   if(event.version!==row.version)return fail('Versão desatualizada. Reabra a missão.',409);
-  if(event.type==='sync'&&m.lastSyncAt&&now-m.lastSyncAt<30_000)return fail('Aguarde 30 segundos para sincronizar.',429);
+  if(((event.type==='sync'&&m.lastSyncAt&&now-m.lastSyncAt<30_000)||
+      (event.type==='audit'&&m.director&&now-m.director.createdAt<30_000)))return fail('Aguarde 30 segundos para sincronizar.',429);
   let next,remote;
-  if(!['OWNER_APPROVED','CANCELLED','FAILED','PAUSED'].includes(m.status) && ['sync','approve'].includes(event.type)){
+  if(!['OWNER_APPROVED','CANCELLED','FAILED','PAUSED'].includes(m.status) && ['sync','approve','audit'].includes(event.type)){
     if(!m.brief.pr)return fail('Vincule o número do PR antes de sincronizar.',409);
-    try {remote=await nexusGitHubEvidence(env,repo,m.brief);}
+    try {remote=await nexusGitHubEvidence(env,repo,m.brief,event.type==='audit');}
     catch{return fail('Não foi possível verificar o Issue e o PR no GitHub. Confira o marcador, a branch e as permissões.',409);}
   }
   try {next=transition(m,event,remote,now);}
@@ -165,9 +206,13 @@ export async function nexusRoute({env,path,method,read,now}) {
     status:next.status,reason:event.type==='decision'?event.payload.reason:next.reason??null,
     evidenceRefs:event.type==='attest'?[event.payload.url,...(event.payload.axis==='experience'?[event.payload.functionalUrl,event.payload.visualUrl]:[])]:[],
     details:event.type==='attest'?{axis:event.payload.axis,criterion:event.payload.criterion,
-      status:event.payload.status,reason:event.payload.reason}:event.type==='revision_request'?next.findings.at(-1):null};
+      status:event.payload.status,reason:event.payload.reason}:event.type==='revision_request'?next.findings.at(-1):event.type==='audit'?next.director:null};
   await env.DB.batch([
-    env.DB.prepare('INSERT OR IGNORE INTO nexus_events_v1 SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM nexus_missions_v1 WHERE id=? AND version=?)')
+    env.DB.prepare(`INSERT OR IGNORE INTO nexus_events_v1 SELECT ?,?,?,? WHERE EXISTS(
+      SELECT 1 FROM nexus_missions_v1 m JOIN github_repos_v15 p ON p.id=m.repo
+      JOIN github_inventory_v15 i ON i.repo=p.id AND i.installation=m.installation
+      JOIN github_account_v15 a ON a.installation=m.installation
+      WHERE m.id=? AND m.version=? AND p.state='active' AND i.availability='available' AND a.state!='disconnected')`)
       .bind(event.id,id,row.version+1,JSON.stringify(entry),id,row.version),
     env.DB.prepare('UPDATE nexus_missions_v1 SET version=version+1,record=? WHERE id=? AND version=? AND EXISTS(SELECT 1 FROM nexus_events_v1 WHERE id=? AND mission=? AND version=?)')
       .bind(JSON.stringify(next),id,row.version,event.id,id,row.version+1),

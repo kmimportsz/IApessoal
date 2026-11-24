@@ -489,11 +489,19 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   const id=crypto.randomUUID();
   let commit='a'.repeat(40), branch='nexus-test', ci='success';
   t.mock.method(globalThis,'fetch',async address=>{
-    const {pathname}=new URL(address);
+    const {pathname,searchParams}=new URL(address);
     const marker='NEXUS-MISSION: '+id;
     if(pathname.endsWith('/access_tokens'))return Response.json({token:'mock-scope'});
     if(pathname.endsWith('/issues/2'))return Response.json({number:2,body:marker});
-    if(pathname.endsWith('/pulls/8'))return Response.json({number:8,body:marker,base:{repo:{id:12},ref:'main'},
+    if(pathname.endsWith('/pulls/8/files'))return Response.json([{filename:'src/cadastro.test.ts',status:'modified'},
+      {filename:'src/cadastro.ts',status:'modified'},{filename:'.env',status:'modified'}]);
+    if(pathname.includes('/contents/')){
+      assert.equal(searchParams.get('ref'),commit);
+      assert.doesNotMatch(pathname,/\.env/);
+      return Response.json({type:'file',encoding:'base64',content:btoa(pathname.endsWith('.test.ts')?
+        'test.skip("cadastro", () => {});':'export const cadastro = 1;')});
+    }
+    if(pathname.endsWith('/pulls/8'))return Response.json({number:8,body:marker,changed_files:3,base:{repo:{id:12},ref:'main'},
       head:{repo:{id:12},ref:branch,sha:commit}});
     if(pathname.includes('/check-runs'))return Response.json({check_runs:[{name:'validar',head_sha:commit,
       app:{slug:'github-actions'},status:'completed',conclusion:ci}]});
@@ -520,7 +528,11 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   await send('start');
   branch='other';await send('sync',undefined,409);branch='nexus-test';
   await send('sync');
-  assert.equal((await send('audit')).mission.status,'EVIDENCE_MISSING');
+  const initial=await send('audit');
+  assert.equal(initial.mission.status,'EVIDENCE_MISSING');
+  assert.equal(initial.mission.director.verified.some(item=>item.text.includes('src/cadastro.ts')),true);
+  assert.equal(initial.mission.director.hypotheses.some(item=>item.text.includes('ignorado')),true);
+  assert.doesNotMatch(JSON.stringify(initial.mission.director),/test\.skip|export const/);
   const url='https://github.com/owner/repo';
   const record={commit,status:'passed',url,reason:'Observei e verifiquei as evidências no teste.'};
   await send('attest',{...record,axis:'experience'},409);
@@ -534,10 +546,14 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   await send('sync');
   const dimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
   await send('attest',{...record,commit,status:'failed',axis:'experience',functionalUrl:url,visualUrl:url,dimensions});
+  ci='failure';
   assert.equal((await send('audit')).mission.status,'CHANGES_REQUIRED');
   assert.equal((await send('approve',{commit},409)).error.length>0,true);
   const detail=await (await call(path)).json();
   assert.equal(detail.review.delivery,'manual');
+  assert.equal(detail.review.correctionPackage.delivery,'manual');
+  assert.equal(detail.review.correctionPackage.revision,commit);
+  assert.equal(detail.review.correctionPackage.requests.some(item=>item.location==='validar'),true);
   assert.equal(detail.review.gate.approved,false);
   assert.equal(detail.events.some(e=>e.type==='revision_request'),true);
   assert.equal(count(),0);

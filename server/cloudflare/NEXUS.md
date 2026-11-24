@@ -37,3 +37,11 @@ Para atestar um eixo além de UX, use `{axis, commit, status, url, reason}`. Os 
 A API usa a mesma autenticação do gateway, histórico append-only, checagem de concorrência e idempotência. Validação e exportação não chamam modelos. Atribuições de agente são convenções do fluxo de trabalho. As ações autenticadas do painel são registradas como ações do proprietário.
 
 ChatGPT e Codex precisam ser invocados. A leitura de metadados do GitHub não transmite pedidos do painel ao Codex. O ciclo autônomo pedido em Prova de Integração exige um canal oficial e autorizado para entregar a revisão, iniciar a correção e obter evidência da recepção. A suíte local injeta respostas GitHub de teste para exercer transições reais do Worker e do SQLite. Esses testes não comprovam integração ativa entre agentes ou provisionamento da GitHub App em um ambiente isolado. A instalação no iPhone e a validação visual de um fluxo autenticado seguem pendentes.
+
+## Investigação da Diretora
+
+**Investigar PR e gerar relatório** relê o SHA e os checks obrigatórios no GitHub e examina até três arquivos elegíveis fixados nesse commit. O relatório separa fatos observados, dúvidas e limites da amostra. Falhas de CI geram pedidos estruturados de correção. Heurísticas como a presença de um teste ignorado são hipóteses e não substituem a execução de testes. O código lido não é incluído no histórico ou no pacote de correção. Se o PR avançar durante a leitura, a auditoria deve ser reiniciada sobre o novo SHA.
+
+O brief ainda pode ser importado como JSON. Evidências e correções têm ações e campos próprios no painel. O proprietário continua responsável pelas atestações externas e pela confirmação de UX. A auditoria não invoca modelos e não pode se autoaprovar.
+
+**Compartilhar pacote para o Codex** exporta um contrato versionado `nexus.revision_request` com missão, SHA, branch, escopo e testes de aceite. O pacote indica entrega manual. Um transporte futuro precisa de autorização explícita, verificação do destinatário e do escopo, deduplicação e confirmação real de recebimento. O pacote não inicia uma sessão do Codex.
