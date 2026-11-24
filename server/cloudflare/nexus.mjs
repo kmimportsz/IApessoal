@@ -172,6 +172,7 @@ export async function nexusRoute({env,path,method,read,now}) {
     env.DB.prepare('UPDATE nexus_missions_v1 SET version=version+1,record=? WHERE id=? AND version=? AND EXISTS(SELECT 1 FROM nexus_events_v1 WHERE id=? AND mission=? AND version=?)')
       .bind(JSON.stringify(next),id,row.version,event.id,id,row.version+1),
   ]);
-  const saved=await env.DB.prepare('SELECT 1 FROM nexus_events_v1 WHERE id=? AND mission=?').bind(event.id,id).first();
-  return saved?reply({mission:next,version:row.version+1}):fail('Conflito de versão.',409);
+  const saved=await env.DB.prepare(`SELECT m.record,m.version FROM nexus_missions_v1 m
+    JOIN nexus_events_v1 e ON e.mission=m.id WHERE m.id=? AND e.id=?`).bind(id,event.id).first();
+  return saved?reply({mission:JSON.parse(saved.record),version:saved.version}):fail('Conflito de versão.',409);
 }
