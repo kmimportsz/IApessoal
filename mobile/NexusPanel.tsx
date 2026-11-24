@@ -1,4 +1,4 @@
-import React,{useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {Alert,Linking,Pressable,Share,StyleSheet,Text,TextInput,View} from 'react-native';
 import {randomUUID} from 'expo-crypto';
 import {palette} from './visual';
@@ -11,11 +11,22 @@ type Detail={mission:Mission;version:number;
       requests:{location:string;why:string;test:string}[];model?:{state:string;neurons?:number;observations?:{path:string;line:number;problem:string;verification:string}[]}}}};
 const axes=[['objective','Objetivo'],['correctness','Funcionamento'],['experience','Experiência'],
   ['security','Segurança'],['resilience','Resiliência'],['delivery','Entrega']];
+const statusLabels:Record<string,string>={IDEA:'Ideia recebida',SPEC_READY:'Planejamento pronto',IMPLEMENTING:'Em implementação',CI_PENDING:'Aguardando testes',AI_AUDIT:'Em revisão',EVIDENCE_MISSING:'Aguardando evidências',READY_FOR_OWNER:'Aguardando sua aprovação',CHANGES_REQUIRED:'Correções necessárias',OWNER_APPROVED:'Aprovada por você',RELEASED:'Publicada',PAUSED:'Pausada',CANCELLED:'Cancelada',FAILED:'Falhou'};
+const labelStatus=(status:string)=>statusLabels[status]??status;
+const eventLabels:Record<string,string>={spec_ready:'Planejamento confirmado',start:'Implementação registrada',sync:'GitHub conferido',audit:'Revisão registrada',attest:'Evidência registrada',revision_request:'Correção solicitada',approve:'Aprovação registrada',pause:'Pausa registrada',decision:'Decisão registrada',executor:'Executor selecionado',link_pr:'Entrega vinculada',fail:'Falha registrada',cancel:'Cancelamento registrado'};
+const axisLabel=(axis:string)=>axes.find(([id])=>id===axis)?.[1]??({release:'Aprovação final',criteria:'Critérios de aceite',ci:'Testes'} as Record<string,string>)[axis]??axis;
 const dimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
 
 export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promise<Response>}) {
   const [missions,setMissions]=useState<Mission[]>();
   const [detail,setDetail]=useState<Detail>();
+  const [selectedId,setSelectedId]=useState<string>();
+  const [importing,setImporting]=useState(false);
+  const [advanced,setAdvanced]=useState(false);
+  const [showReport,setShowReport]=useState(false);
+  const [showHistory,setShowHistory]=useState(false);
+  const [incomplete,setIncomplete]=useState(false);
+  const flight=useRef(false);
   const [brief,setBrief]=useState('');
   const [payload,setPayload]=useState('');
   const [form,setForm]=useState<'evidence'|'revision'>();
@@ -30,25 +41,39 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
     return value;
   }
   async function run(action:()=>Promise<void>) {
-    if(busy)return;
-    setBusy(true);setNotice('');
+    if(flight.current)return;
+    flight.current=true;setBusy(true);setNotice('');
     try {await action();} catch(error){setNotice(error instanceof Error?error.message:'A operação falhou.');}
-    finally {setBusy(false);}
+    finally {flight.current=false;setBusy(false);}
   }
+  async function loadList(){setMissions((await api('/nexus/missions')).missions);}
+  useEffect(()=>{void run(loadList);},[]);
   function updateMissionInList(mission: Mission) {
     setMissions(current=>current?.map(item=>item.id===mission.id?mission:item));
   }
   async function open(id:string) {
     const latest: Detail=await api('/nexus/missions/'+id);
-    setDetail(latest);
+    setDetail(latest);setIncomplete(false);
     updateMissionInList(latest.mission);
   }
   async function event(type:string,value?:unknown) {
-    if(!detail)return;
+    if(!detail||incomplete)return;
     const result: Pick<Detail,'mission'|'version'>=await api('/nexus/missions/'+detail.mission.id+'/events',
       {id:randomUUID(),type,version:detail.version,payload:value});
     updateMissionInList(result.mission);
+    // A successful POST is authoritative even if refreshing the full report fails.
+    setDetail(previous=>previous?{...previous,mission:result.mission,version:result.version}:previous);
+    setIncomplete(true);
     await open(detail.mission.id);
+  }
+  function select(id:string){
+    if(flight.current)return;
+    setSelectedId(id);setDetail(undefined);setIncomplete(false);setForm(undefined);
+    setAdvanced(false);setShowReport(false);setShowHistory(false);setPayload('');
+    void run(()=>open(id));
+  }
+  function back(){
+    setSelectedId(undefined);setDetail(undefined);setIncomplete(false);setNotice('');setForm(undefined);
   }
   function button(label:string,onPress:()=>void) {
     return <Pressable key={label} accessibilityRole="button" disabled={busy} style={s.button} onPress={onPress}><Text style={s.link}>{label}</Text></Pressable>;
@@ -87,23 +112,55 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
   const review=state==='AI_AUDIT'||state==='EVIDENCE_MISSING'||state==='READY_FOR_OWNER'||state==='CHANGES_REQUIRED';
   return <View style={s.card}>
     <Text style={s.title}>NEXUS · Missões de engenharia</Text>
-    <Text style={s.muted}>A Diretora avalia as evidências. A passagem para ChatGPT e Codex é manual.</Text>
-    {button('Consultar missões',()=>void run(async()=>setMissions((await api('/nexus/missions')).missions)))}
-    {(busy||notice)&&<Text accessibilityLiveRegion="polite" style={s.muted}>{busy?'Consultando…':notice}</Text>}
-    {missions && <>
-      {missions.map(m=><View key={m.id}>{button(m.repository+' · '+m.status,()=>void run(async()=>{setForm(undefined);await open(m.id);}))}</View>)}
-      <Text style={s.muted}>Cole o brief JSON acordado no Issue e no PR.</Text>
-      <TextInput accessibilityLabel="Brief JSON da missão" multiline value={brief} onChangeText={setBrief} autoCapitalize="none" style={s.input}/>
-      {button('Importar brief',()=>void run(async()=>{
-        const result=await api('/nexus/missions',JSON.parse(brief));
-        setBrief('');await open(result.mission.id);setMissions((await api('/nexus/missions')).missions);
-      }))}
+    {(busy||notice)&&<Text accessibilityLiveRegion="polite" style={notice?s.warning:s.muted}>{busy?'Consultando…':notice}</Text>}
+    {!selectedId ? <>
+      <Text style={s.muted}>Acompanhe suas entregas em um só lugar. A revisão é independente; o início do Codex ainda é manual.</Text>
+      {button('Atualizar missões',()=>void run(loadList))}
+      {missions?.length===0&&<Text style={s.muted}>Nenhuma missão disponível.</Text>}
+      {missions?.map(m=><Pressable key={m.id} accessibilityRole="button" accessibilityLabel={m.repository+' · '+labelStatus(m.status)} disabled={busy} style={s.missionCard} onPress={()=>select(m.id)}>
+        <Text style={s.title}>{m.repository}</Text>
+        <Text style={s.status}>{labelStatus(m.status)}</Text>
+        <Text numberOfLines={2} style={s.muted}>{m.brief.objective}</Text>
+      </Pressable>)}
+      {button(importing?'Ocultar importação':'Importar missão (avançado)',()=>setImporting(!importing))}
+      {importing&&<>
+        <Text style={s.muted}>Cole o briefing JSON acordado no GitHub.</Text>
+        <TextInput accessibilityLabel="Brief JSON da missão" multiline value={brief} onChangeText={setBrief} autoCapitalize="none" style={s.input}/>
+        {button('Importar brief',()=>void run(async()=>{
+          const result=await api('/nexus/missions',JSON.parse(brief));
+          setBrief('');setImporting(false);setSelectedId(result.mission.id);setDetail(undefined);setIncomplete(false);
+          await loadList();await open(result.mission.id);
+        }))}
+      </>}
+    </>:<>
+      {button('Voltar às missões',back)}
+      {(!detail||incomplete)&&!busy&&button('Tentar novamente',()=>void run(()=>open(selectedId)))}
+      {incomplete&&<Text accessibilityRole="alert" style={s.warning}>A alteração foi registrada. Atualize o relatório antes de continuar.</Text>}
     </>}
-    {detail && <>
+    {selectedId&&detail&&<>
       <Text style={s.title}>{detail.mission.repository}</Text>
+      <Text style={s.status}>{labelStatus(detail.mission.status)}</Text>
       <Text style={s.muted}>{detail.mission.brief.objective}</Text>
-      <Text selectable style={s.muted}>{detail.mission.id} · {state} · {detail.mission.iteration}/{detail.mission.brief.maxIterations}</Text>
-      <Text selectable style={s.muted}>Commit {detail.mission.revision??'aguardando verificação do PR'}</Text>
+      <View style={s.summary}>
+        <Text style={s.title}>Etapas da entrega</Text>
+        <Text style={s.muted}>1. ChatGPT · {state==='IDEA'?'Planejamento pendente':'Especificação registrada'}</Text>
+        <Text style={s.muted}>2. Codex · {detail.execution?.result?'Entrega observada no GitHub':'Execução ainda não confirmada'}</Text>
+        <Text style={s.muted}>3. Diretora · {detail.review.director?'Relatório disponível':'Revisão pendente'}</Text>
+        <Text style={s.muted}>4. Você · {state==='OWNER_APPROVED'||state==='RELEASED'?'Aprovação registrada':'Aprovação pendente'}</Text>
+        <Text style={s.muted}>Ciclo {detail.mission.iteration} de {detail.mission.brief.maxIterations}</Text>
+        {detail.execution?.result&&<Text style={s.status}>Testes: {detail.execution.result.ci==='passed'?'aprovados':detail.execution.result.ci==='failed'?'falharam':'aguardando confirmação'}</Text>}
+      </View>
+      {!incomplete&&<>
+      <Text style={s.title}>O que falta</Text>
+      {detail.review.gate.blockers.length?detail.review.gate.blockers.map(item=><Text key={item.axis+item.reason} style={s.muted}>{axisLabel(item.axis)}: {item.reason==='Evidencia verificada ausente'?'evidência pendente':item.reason==='Aprovacao do proprietario necessaria'?'aguardando sua decisão':item.reason}</Text>):<Text style={s.muted}>Nenhum bloqueio registrado.</Text>}
+      {state==='IDEA'&&button('Confirmar especificação',()=>void run(()=>event('spec_ready')))}
+      {['SPEC_READY','CHANGES_REQUIRED'].includes(state??'')&&button('Registrar início da implementação',()=>void run(()=>event('start')))}
+      {['IMPLEMENTING','CI_PENDING','AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER'].includes(state??'')&&button('Atualizar resultado do GitHub',()=>void run(()=>event('sync')))}
+      {state==='READY_FOR_OWNER'&&button('Registrar minha aprovação',()=>void run(()=>event('approve',{commit:detail.mission.revision})))}
+      {button(advanced?'Ocultar opções técnicas':'Opções técnicas e Codex',()=>setAdvanced(!advanced))}
+      {advanced&&<>
+      <Text selectable style={s.muted}>{detail.mission.id}</Text>
+      <Text selectable style={s.muted}>Commit {detail.mission.revision??'aguardando verificação'}</Text>
       <Text style={s.title}>Executor · {mode==='web'?'Codex Web':'Codex CLI'}</Text>
       {['IDEA','SPEC_READY','CHANGES_REQUIRED'].includes(state??'')&&<View style={s.row}>
         {mode!=='web'&&button('Selecionar Codex Web',()=>void run(()=>event('executor',{mode:'web'})))}
@@ -118,13 +175,9 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
           {detail.execution?.prUrl&&evidenceLink({text:'Abrir PR',url:detail.execution.prUrl})}
         </View>
       </>}
-      {detail.execution?.result&&<Text style={s.muted}>Último resultado observado no GitHub · {detail.execution.result.commit.slice(0,12)} · CI {detail.execution.result.ci}</Text>}
-      {detail.review.gate.blockers.map(item=><Text key={item.axis+item.reason} style={s.muted}>{item.reason}</Text>)}
-      {state==='IDEA'&&button('Confirmar especificação',()=>void run(()=>event('spec_ready')))}
-      {['SPEC_READY','CHANGES_REQUIRED'].includes(state??'')&&button('Registrar início da implementação',()=>void run(()=>event('start')))}
-      {['IMPLEMENTING','CI_PENDING','AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER'].includes(state??'')&&
-        button('Conferir Issue, PR e CI',()=>void run(()=>event('sync')))}
-      {detail.review.director&&<View style={s.card}>
+      </>}
+      {detail.review.director&&button(showReport?'Ocultar relatório da Diretora':'Ver relatório da Diretora',()=>setShowReport(!showReport))}
+      {showReport&&detail.review.director&&<View style={s.card}>
         <Text style={s.title}>Relatório da Diretora</Text>
         <Text style={s.muted}>Commit {detail.review.director.commit.slice(0,12)}</Text>
         <Text style={s.title}>Evidências verificadas</Text>
@@ -137,7 +190,7 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
         </View>)}
         {detail.review.director.limits.map(item=><Text key={item} style={s.muted}>{item}</Text>)}
         {!!detail.review.director.model&&detail.review.director.model.state!=='not_requested'&&<>
-          <Text style={s.title}>Hipóteses da revisão assistida</Text>
+          <Text style={s.title}>Hipóteses da revisão assistida (não confirmadas)</Text>
           {detail.review.director.model.state==='completed'?<>
             <Text style={s.muted}>Consumo registrado · {detail.review.director.model.neurons} Neurons</Text>
             {detail.review.director.model.observations?.map((item,index)=><View key={index}>
@@ -195,23 +248,30 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
         button('Investigar com revisão assistida',()=>Alert.alert('Enviar amostra para revisão?',
           'Até três amostras do código autorizado serão enviadas ao Workers AI. A revisão usa a cota gratuita e precisa de validação externa.',
           [{text:'Cancelar',style:'cancel'},{text:'Autorizar uma revisão',onPress:()=>void run(()=>event('audit',{model:true}))}]))}
+      {advanced&&<>
       {state==='IMPLEMENTING'&&button('Vincular número do PR digitado',()=>void run(()=>event('link_pr',{pr:Number(payload)})))}
       {!['OWNER_APPROVED','CANCELLED','FAILED','PAUSED'].includes(state??'')&&<>
         {<TextInput accessibilityLabel="Número do PR ou decisão da missão" value={payload} onChangeText={setPayload} style={s.input}/>}
         {button('Registrar decisão digitada',()=>void run(()=>event('decision',{reason:payload})))}
         {button('Pausar com motivo digitado',()=>void run(()=>event('pause',{reason:payload})))}
       </>}
-      {state==='READY_FOR_OWNER'&&button('Registrar minha aprovação',()=>void run(()=>event('approve',{commit:detail.mission.revision})))}
       {button('Compartilhar relatório da Diretora',()=>void run(async()=>{await Share.share({message:JSON.stringify(detail.review,null,2)});}))}
       {mode==='cli'&&detail.review.correctionPackage&&button('Compartilhar pacote para o Codex CLI',()=>void run(async()=>{
         await Share.share({message:JSON.stringify(detail.review.correctionPackage,null,2)});
       }))}
-      {detail.events.map(item=><Text key={item.id} style={s.muted}>{new Date(item.at).toLocaleString('pt-BR')} · {item.type} · {item.status}{item.reason?' · '+item.reason:''}</Text>)}
+      </>}
+      {button(showHistory?'Ocultar histórico':'Ver histórico',()=>setShowHistory(!showHistory))}
+      {showHistory&&detail.events.map(item=><Text key={item.id} style={s.muted}>{new Date(item.at).toLocaleString('pt-BR')} · {eventLabels[item.type]??item.type} · {labelStatus(item.status)}{item.reason?' · '+item.reason:''}</Text>)}
+      </>}
     </>}
   </View>;
 }
 const s=StyleSheet.create({
   card:{padding:14,gap:8,borderRadius:16,backgroundColor:palette.panel,borderColor:palette.border,borderWidth:1},
+  missionCard:{padding:12,gap:6,borderRadius:12,borderColor:palette.border,borderWidth:1,backgroundColor:palette.panel},
+  summary:{padding:12,gap:8,borderRadius:12,borderColor:palette.border,borderWidth:1},
+  status:{color:'#AAD0FF',fontSize:14,fontWeight:'700'},
+  warning:{color:'#FFD28C',fontSize:13,lineHeight:19},
   title:{color:palette.text,fontSize:17,fontWeight:'700'},
   muted:{color:palette.muted,fontSize:13,lineHeight:19},
   link:{color:'#AAD0FF',fontSize:14,fontWeight:'600'},
