@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {codexReviewReceipt} from './github.mjs';
+import {codexReviewReceipt,collectCodexComments} from './github.mjs';
 import {directorReport} from './nexus.mjs';
 
 const sha='a'.repeat(40),url='https://github.com/owner/repo/pull/8';
@@ -30,4 +30,13 @@ test('Diretora distingue recibo de revisão e apontamentos não resolvidos de ap
   assert.equal(report.approved,undefined);
   const stale=directorReport({repo:'owner/repo',commit:sha,ci:'passed',prUrl:url,codex:{state:'stale'}},1);
   assert.equal(stale.verified.some(x=>x.text.includes('Codex')),false);
+});
+
+test('Recibo da segunda página é observado; paginação incompleta não confirma revisão',async()=>{
+  const first=Array.from({length:50},(_,i)=>({id:i+100}));
+  const actual=make(completed);
+  const pages=await collectCodexComments(async page=>page===1?first:[actual]);
+  assert.equal(codexReviewReceipt(pages,sha,url).state,'completed');
+  const partial=await collectCodexComments(async()=>first,2);
+  assert.equal(codexReviewReceipt(partial,sha,url).state,'unavailable');
 });
