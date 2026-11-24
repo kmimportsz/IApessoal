@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {test} from 'node:test';
 import ts from 'typescript';
+import * as operations from './nexus-operations.ts';
 
 const require=createRequire(import.meta.url);
 const {createElement}=require('react');
@@ -15,6 +16,7 @@ const stubs={
   'react-native':{Pressable:'Pressable',Text:'Text',TextInput:'TextInput',View:'View',StyleSheet:{create:styles=>styles}},
   'expo-crypto':{randomUUID:()=> 'event-id'},
   './visual':{palette:{}},
+  './nexus-operations':operations,
 };
 const component={exports:{}};
 new Function('module','exports','require',outputText)(component,component.exports,name=>stubs[name]??require(name));
@@ -132,4 +134,23 @@ test('Navegação notifica o contêiner ao abrir missão do fim de uma lista e a
   await ui.press('Voltar às missões');
   assert.equal(navigations,2);
   assert.equal(ui.has('owner/repo-29 · Ideia recebida'),true);
+});
+
+test('AutoPilot usa versões confirmadas e para sem aprovar',async t=>{
+  let current={...mission,status:'IMPLEMENTING'},version=5;
+  const sent=[];
+  const ui=await mount(t,async(path,data)=>{
+    if(path==='/nexus/missions')return Response.json({missions:[current]});
+    if(path.endsWith('/events')){
+      sent.push(data.type+':'+data.version);assert.equal(data.version,version);
+      version++;current={...current,status:data.type==='sync'?'AI_AUDIT':'EVIDENCE_MISSING'};
+      return Response.json({mission:current,version});
+    }
+    return Response.json({...details(current,version),execution:{mode:'web',prUrl:'https://github.com/owner/repo/pull/1'}});
+  });
+  await ui.press('owner/repo · Em implementação');
+  await ui.press('AutoPilot · conferir e auditar');
+  assert.deepEqual(sent,['sync:5','audit:6']);
+  assert.ok(ui.rendered().includes('Aguardando evidências'));
+  assert.equal(ui.has('Registrar minha aprovação'),false);
 });
