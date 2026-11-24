@@ -1,6 +1,6 @@
 import { runNexusModel } from './nexus-model.mjs';
 import { evaluateQualityGate, qualityAxes } from './excellence-engine.mjs';
-import { nexusGitHubEvidence } from './github.mjs';
+import { nexusGitHubEvidence, nexusLinkedScope } from './github.mjs';
 import { idPattern } from './recovery.mjs';
 
 const uxDimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
@@ -150,6 +150,23 @@ async function visibleRepo(env,id,installation) {
 export async function nexusRoute({env,path,method,read,now,quota}) {
   const installation=env.GITHUB_INSTALLATION_ID;
   if(!installation)return fail('NEXUS requer um repositório da instalação GitHub autorizada.',503);
+  if(path==='/nexus/prepare'&&method==='POST'){
+    const draft=await read(14_000);
+    if(!draft||!number(draft.repoId)||!number(draft.issue)||!number(draft.pr))return fail('Selecione repositório, Issue e PR válidos.');
+    const repo=await visibleRepo(env,draft.repoId,installation);
+    if(!repo||repo.state!=='active')return fail('Repositório indisponível.',403);
+    // Validate user-supplied brief fields before doing any remote work.
+    const provisional={schema:1,id:'00000000-0000-4000-8000-000000000001',repoId:repo.id,issue:draft.issue,pr:draft.pr,
+      baseRef:'base-preview',branch:'work-preview',objective:draft.objective,constraints:draft.constraints??[],
+      nonGoals:draft.nonGoals??[],checks:draft.checks,criteria:draft.criteria,maxIterations:3,executor:'web'};
+    if(!validBrief(provisional))return fail('Informe objetivo, checks obrigatórios e critérios de aceite.');
+    try{
+      const {commit,...scope}=await nexusLinkedScope(env,repo,draft.issue,draft.pr);
+      const brief={...provisional,...scope};
+      if(!validBrief(brief))return fail('Escopo de branches inválido.');
+      return reply({brief,commit,repository:repo.name});
+    }catch{return fail('Não foi possível confirmar o vínculo entre Issue e PR. Confira os marcadores e o acesso.',409);}
+  }
   const match=/^\/nexus\/(missions)(?:\/([a-f\d-]+)(\/events)?)?$/i.exec(path);
   if(!match)return fail('Rota inexistente.',404);
   const id=match[2];
@@ -166,6 +183,14 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
     if(!validBrief(draft))return fail('Brief inválido.');
     const repo=await visibleRepo(env,draft.repoId,installation);
     if(!repo||repo.state!=='active')return fail('Repositório indisponível.',403);
+    if(draft.pr!=null&&draft.expectedCommit!==undefined){
+      if(typeof draft.expectedCommit!=='string'||! /^[a-f0-9]{40}$/.test(draft.expectedCommit))return fail('SHA de confirmação inválido.');
+      try{
+        const scope=await nexusLinkedScope(env,repo,draft.issue,draft.pr);
+        if(scope.id!==draft.id||scope.baseRef!==draft.baseRef||scope.branch!==draft.branch||scope.commit!==draft.expectedCommit)
+          return fail('O escopo ou o commit mudou. Prepare a missão novamente.',409);
+      }catch{return fail('Não foi possível reconfirmar a entrega no GitHub.',409);}
+    }
     const claimed=await env.DB.prepare(`SELECT 1 AS found FROM nexus_missions_v1 WHERE installation=? AND repo=?
       AND json_extract(record,'$.brief.branch')=? AND json_extract(record,'$.status') NOT IN ('CANCELLED','FAILED','RELEASED')`)
       .bind(installation,repo.id,draft.branch).first();

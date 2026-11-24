@@ -18,11 +18,21 @@ const eventLabels:Record<string,string>={spec_ready:'Planejamento confirmado',st
 const axisLabel=(axis:string)=>axes.find(([id])=>id===axis)?.[1]??({release:'Aprovação final',criteria:'Critérios de aceite',ci:'Testes'} as Record<string,string>)[axis]??axis;
 const dimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
 
-export function NexusPanel({request,onNavigate}:{request:(path:string,data?:unknown)=>Promise<Response>;onNavigate?:()=>void}) {
+type LinkedRepo={id:number;name:string};
+type PreparedLink={brief:Mission['brief']&{id:string;repoId:number;issue:number;pr:number};commit:string;repository:string};
+export function NexusPanel({request,onNavigate,repos=[]}:{request:(path:string,data?:unknown)=>Promise<Response>;onNavigate?:()=>void;repos?:LinkedRepo[]}) {
   const [missions,setMissions]=useState<Mission[]>();
   const [detail,setDetail]=useState<Detail>();
   const [selectedId,setSelectedId]=useState<string>();
   const [importing,setImporting]=useState(false);
+  const [linking,setLinking]=useState(false);
+  const [linkedRepo,setLinkedRepo]=useState<number>();
+  const [linkedFields,setLinkedFields]=useState({issue:'',pr:'',objective:'',checks:'',criterion:'',proof:''});
+  const [prepared,setPrepared]=useState<PreparedLink>();
+  function changeLinked(key:keyof typeof linkedFields,value:string){
+    if(flight.current)return;
+    setLinkedFields(old=>({...old,[key]:value}));setPrepared(undefined);
+  }
   const [advanced,setAdvanced]=useState(false);
   const [showReport,setShowReport]=useState(false);
   const [showHistory,setShowHistory]=useState(false);
@@ -52,6 +62,28 @@ export function NexusPanel({request,onNavigate}:{request:(path:string,data?:unkn
     finally {flight.current=false;setBusy(false);}
   }
   async function loadList(){setMissions((await api('/nexus/missions')).missions);}
+  async function prepareLinked(){
+    setPrepared(undefined);
+    if(!repos.some(r=>r.id===linkedRepo))throw Error('Selecione um repositório autorizado.');
+    const issue=Number(linkedFields.issue),pr=Number(linkedFields.pr);
+    if(!Number.isSafeInteger(issue)||issue<=0||!Number.isSafeInteger(pr)||pr<=0)throw Error('Informe números válidos de Issue e PR.');
+    const checks=linkedFields.checks.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+    if(!linkedFields.objective.trim()||!linkedFields.criterion.trim()||!linkedFields.proof.trim()||!checks.length)throw Error('Informe objetivo, checks obrigatórios, critério e evidência esperada.');
+    const response:PreparedLink=await api('/nexus/prepare',{repoId:linkedRepo,issue,pr,objective:linkedFields.objective.trim(),checks,
+      criteria:[{id:'delivery',description:linkedFields.criterion.trim(),expectedEvidence:linkedFields.proof.trim()}],
+      constraints:['Preservar dados, identidade e versão principal.'],nonGoals:['Publicação automática em produção.']});
+    setPrepared(response);
+  }
+  async function confirmLinked(){
+    if(!prepared||!repos.some(r=>r.id===prepared.brief.repoId))throw Error('Prepare o vínculo novamente.');
+    const candidate=prepared;
+    setPrepared(undefined);
+    const result:Pick<Detail,'mission'|'version'>=await api('/nexus/missions',{...candidate.brief,expectedCommit:candidate.commit});
+    setMissions(current=>[result.mission,...(current??[]).filter(m=>m.id!==result.mission.id)].slice(0,30));
+    setLinking(false);setLinkedFields({issue:'',pr:'',objective:'',checks:'',criterion:'',proof:''});setLinkedRepo(undefined);
+    setSelectedId(result.mission.id);setDetail(undefined);setIncomplete(false);setConfirmed(false);
+    onNavigate?.();await open(result.mission.id);
+  }
   useEffect(()=>{void run(loadList);},[]);
   function updateMissionInList(mission: Mission) {
     setMissions(current=>current?.map(item=>item.id===mission.id?mission:item));
@@ -145,6 +177,28 @@ export function NexusPanel({request,onNavigate}:{request:(path:string,data?:unkn
         <Text style={s.status}>{labelStatus(m.status)}</Text>
         <Text numberOfLines={2} style={s.muted}>{m.brief.objective}</Text>
       </Pressable>)}
+      {button(linking?'Ocultar vínculo':'Vincular entrega do GitHub',()=>{setLinking(!linking);setPrepared(undefined);})}
+      {linking&&<View style={s.summary}>
+        <Text style={s.title}>Conectar entrega existente</Text>
+        <Text style={s.muted}>Escolha o repositório e informe o Issue e o PR da mesma missão. O NEXUS verifica o vínculo sem alterar o GitHub.</Text>
+        {repos.length===0&&<Text style={s.warning}>Nenhum repositório ativo disponível. Confira a conexão com o GitHub.</Text>}
+        <View style={s.row}>{repos.map(r=>button((linkedRepo===r.id?'✓ ':'')+r.name,()=>{if(!flight.current){setLinkedRepo(r.id);setPrepared(undefined);}}))}</View>
+        {([['issue','Número do Issue',10],['pr','Número do PR',10],['objective','Objetivo da entrega',1200],['checks','Checks obrigatórios (um por linha)',1920],['criterion','Critério de aceite',300],['proof','Evidência esperada',300]] as const).map(([key,label,max])=><View key={key}>
+          <Text style={s.muted}>{label}</Text>
+          <TextInput accessibilityLabel={label} placeholder={label} placeholderTextColor={palette.muted} value={linkedFields[key]} editable={!busy}
+            maxLength={max} multiline={key!=='issue'&&key!=='pr'} keyboardType={key==='issue'||key==='pr'?'number-pad':'default'} style={s.field}
+            onChangeText={value=>changeLinked(key,value)}/>
+        </View>)}
+        {button('Conferir vínculo',()=>void run(prepareLinked))}
+        {prepared&&<View style={s.summary}>
+          <Text style={s.title}>Vínculo conferido</Text>
+          <Text style={s.muted}>{prepared.repository} · Issue #{prepared.brief.issue} · PR #{prepared.brief.pr}</Text>
+          <Text style={s.muted}>Branch: {prepared.brief.branch} → {prepared.brief.baseRef}</Text>
+          <Text selectable style={s.muted}>Commit {prepared.commit}</Text>
+          <Text style={s.muted}>A confirmação cria a missão, não inicia o Codex nem aprova a entrega.</Text>
+          {button('Confirmar e criar missão',()=>void run(confirmLinked))}
+        </View>}
+      </View>}
       {button(importing?'Ocultar importação':'Importar missão (avançado)',()=>setImporting(!importing))}
       {importing&&<>
         <Text style={s.muted}>Cole o briefing JSON acordado no GitHub.</Text>

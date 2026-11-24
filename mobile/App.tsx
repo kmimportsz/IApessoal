@@ -1403,7 +1403,7 @@ function PersonalApp() {
       </>}
       {tab === 'Projetos' && <>
         <Text style={s.title}>Projetos</Text>
-        {settings.url===trackingGateway && <NexusPanel request={request} onNavigate={()=>panels.current?.scrollTo({y:0,animated:false})}/>}
+        {settings.url===trackingGateway && <NexusPanel request={request} repos={github?.repos.filter(r=>r.state==='active'&&r.availability==='available').map(r=>({id:r.id,name:r.name}))} onNavigate={()=>panels.current?.scrollTo({y:0,animated:false})}/>}
         {db && <FactoryPanel db={db} session={factorySession.current}/>}
         {github && <View style={s.card}>
           <Text style={s.section}>Repositórios GitHub</Text>

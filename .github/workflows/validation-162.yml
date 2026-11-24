@@ -8,6 +8,7 @@ on:
       - nexus-fase-a
       - fix/nexus-experiencia-simples
       - feature/nexus-factory
+      - feature/nexus-operations
   workflow_dispatch:
 
 permissions:

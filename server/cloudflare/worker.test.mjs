@@ -486,7 +486,8 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   db.exec(`INSERT INTO github_repos_v15(id,name,description,state,due)VALUES(12,'owner/repo','','active',0);
     INSERT INTO github_inventory_v15 VALUES(12,'456','test','available',0);
     INSERT INTO github_account_v15(singleton,installation,state,next_sync)VALUES(1,'456','active',0);`);
-  const id=crypto.randomUUID();
+  const id='abcdefab-1234-4abc-8def-abcdefabcdef';
+  let markerId=id.toUpperCase();
   let commit='a'.repeat(40), branch='nexus-test', ci='success', modelCalls=0;
   env.AI.run=async(_,payload)=>{
     modelCalls++;
@@ -497,7 +498,7 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   };
   t.mock.method(globalThis,'fetch',async address=>{
     const {pathname,searchParams}=new URL(address);
-    const marker='NEXUS-MISSION: '+id;
+    const marker='NEXUS-MISSION: '+markerId;
     if(pathname.endsWith('/access_tokens'))return Response.json({token:'mock-scope'});
     if(pathname.endsWith('/issues/2'))return Response.json({number:2,body:marker});
     if(pathname.endsWith('/pulls/8/files'))return Response.json([{filename:'src/cadastro.test.ts',status:'modified'},
@@ -519,7 +520,23 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   const spec={schema:1,id,repoId:12,issue:2,pr:8,baseRef:'main',branch,objective:'Melhorar cadastro',
     checks:['validar'],constraints:['Somente leitura'],nonGoals:[],criteria:[{id:'cadastro',description:'Completar cadastro',
       expectedEvidence:'Vídeo de execução'}]};
-  const created=await call(base,spec);
+  const prepare={repoId:12,issue:2,pr:8,objective:spec.objective,checks:spec.checks,criteria:spec.criteria};
+  assert.equal((await call('/nexus/prepare',prepare,'z'.repeat(43))).status,401);
+  assert.equal((await call('/nexus/prepare',{...prepare,repoId:999})).status,403);
+  assert.equal((await call('/nexus/prepare',{...prepare,checks:[]})).status,400);
+  markerId=id.toUpperCase()+'\nNEXUS-MISSION: '+id;
+  assert.equal((await call('/nexus/prepare',prepare)).status,409);
+  markerId=id.toUpperCase();
+  const preparedResponse=await call('/nexus/prepare',prepare);
+  assert.equal(preparedResponse.status,200);
+  const prepared=await preparedResponse.json();
+  assert.equal(prepared.brief.id,id);
+  assert.equal(prepared.brief.branch,branch);
+  assert.equal(prepared.commit,commit);
+  const changed='b'.repeat(40);commit=changed;
+  assert.equal((await call(base,{...prepared.brief,expectedCommit:prepared.commit})).status,409);
+  commit='a'.repeat(40);
+  const created=await call(base,{...prepared.brief,expectedCommit:prepared.commit});
   assert.equal(created.status,201);
   assert.equal((await created.json()).mission.brief.executor,'web');
   db.prepare("UPDATE nexus_missions_v1 SET record=json_remove(record,'$.brief.executor') WHERE id=?").run(id);
