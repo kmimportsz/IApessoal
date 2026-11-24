@@ -519,7 +519,20 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   const spec={schema:1,id,repoId:12,issue:2,pr:8,baseRef:'main',branch,objective:'Melhorar cadastro',
     checks:['validar'],constraints:['Somente leitura'],nonGoals:[],criteria:[{id:'cadastro',description:'Completar cadastro',
       expectedEvidence:'Vídeo de execução'}]};
-  const created=await call(base,spec);
+  const prepare={repoId:12,issue:2,pr:8,objective:spec.objective,checks:spec.checks,criteria:spec.criteria};
+  assert.equal((await call('/nexus/prepare',prepare,'z'.repeat(43))).status,401);
+  assert.equal((await call('/nexus/prepare',{...prepare,repoId:999})).status,403);
+  assert.equal((await call('/nexus/prepare',{...prepare,checks:[]})).status,400);
+  const preparedResponse=await call('/nexus/prepare',prepare);
+  assert.equal(preparedResponse.status,200);
+  const prepared=await preparedResponse.json();
+  assert.equal(prepared.brief.id,id);
+  assert.equal(prepared.brief.branch,branch);
+  assert.equal(prepared.commit,commit);
+  const changed='b'.repeat(40);commit=changed;
+  assert.equal((await call(base,{...prepared.brief,expectedCommit:prepared.commit})).status,409);
+  commit='a'.repeat(40);
+  const created=await call(base,{...prepared.brief,expectedCommit:prepared.commit});
   assert.equal(created.status,201);
   assert.equal((await created.json()).mission.brief.executor,'web');
   db.prepare("UPDATE nexus_missions_v1 SET record=json_remove(record,'$.brief.executor') WHERE id=?").run(id);
