@@ -98,3 +98,11 @@ export function quickProfile(profile:ProjectProfile,request:string,mode:FactoryM
   if(!validateProfile(result))throw Error('Confira o perfil do projeto.');
   return result;
 }
+
+export type FactoryHandoff={objective:string;projectBrief:string};
+export function factoryHandoff(profile:ProjectProfile,request:string,mode:FactoryMode):FactoryHandoff{
+  const projectBrief=buildPrompt(profile,request,mode);
+  if(projectBrief.length>12000)throw Error('Briefing excede 12.000 caracteres. Reduza os detalhes antes de vincular.');
+  if(/-----BEGIN |\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA)[a-z\d_]+/i.test(projectBrief))throw Error('Remova credenciais do briefing antes de vincular.');
+  return {objective:request.trim(),projectBrief};
+}

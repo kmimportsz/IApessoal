@@ -9,6 +9,7 @@ on:
       - fix/nexus-experiencia-simples
       - feature/nexus-factory
       - feature/nexus-operations
+      - feature/nexus-intake
   workflow_dispatch:
 
 permissions:
