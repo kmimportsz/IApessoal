@@ -26,6 +26,7 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
   const [showReport,setShowReport]=useState(false);
   const [showHistory,setShowHistory]=useState(false);
   const [incomplete,setIncomplete]=useState(false);
+  const [confirmed,setConfirmed]=useState(false);
   const flight=useRef(false);
   const [brief,setBrief]=useState('');
   const [payload,setPayload]=useState('');
@@ -37,7 +38,10 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
   async function api(path:string,data?:unknown) {
     const response=await request(path,data);
     const value=await response.json();
-    if(!response.ok)throw Error(value.error??'NEXUS indisponível.');
+    if(!response.ok){
+      if(response.status===409&&path.endsWith('/events'))setIncomplete(true);
+      throw Error(value.error??'NEXUS indisponível.');
+    }
     return value;
   }
   async function run(action:()=>Promise<void>) {
@@ -53,7 +57,7 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
   }
   async function open(id:string) {
     const latest: Detail=await api('/nexus/missions/'+id);
-    setDetail(latest);setIncomplete(false);
+    setDetail(latest);setIncomplete(false);setConfirmed(false);
     updateMissionInList(latest.mission);
   }
   async function event(type:string,value?:unknown) {
@@ -63,17 +67,17 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
     updateMissionInList(result.mission);
     // A successful POST is authoritative even if refreshing the full report fails.
     setDetail(previous=>previous?{...previous,mission:result.mission,version:result.version}:previous);
-    setIncomplete(true);
+    setConfirmed(true);setIncomplete(true);
     await open(detail.mission.id);
   }
   function select(id:string){
     if(flight.current)return;
-    setSelectedId(id);setDetail(undefined);setIncomplete(false);setForm(undefined);
+    setSelectedId(id);setDetail(undefined);setIncomplete(false);setConfirmed(false);setForm(undefined);
     setAdvanced(false);setShowReport(false);setShowHistory(false);setPayload('');
     void run(()=>open(id));
   }
   function back(){
-    setSelectedId(undefined);setDetail(undefined);setIncomplete(false);setNotice('');setForm(undefined);
+    setSelectedId(undefined);setDetail(undefined);setIncomplete(false);setConfirmed(false);setNotice('');setForm(undefined);
   }
   function button(label:string,onPress:()=>void) {
     return <Pressable key={label} accessibilityRole="button" disabled={busy} style={s.button} onPress={onPress}><Text style={s.link}>{label}</Text></Pressable>;
@@ -135,21 +139,21 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
     </>:<>
       {button('Voltar às missões',back)}
       {(!detail||incomplete)&&!busy&&button('Tentar novamente',()=>void run(()=>open(selectedId)))}
-      {incomplete&&<Text accessibilityRole="alert" style={s.warning}>A alteração foi registrada. Atualize o relatório antes de continuar.</Text>}
+      {incomplete&&<Text accessibilityRole="alert" style={s.warning} >{confirmed?'A alteração foi registrada. ':''}Atualize o relatório antes de continuar.</Text>}
     </>}
     {selectedId&&detail&&<>
       <Text style={s.title}>{detail.mission.repository}</Text>
       <Text style={s.status}>{labelStatus(detail.mission.status)}</Text>
       <Text style={s.muted}>{detail.mission.brief.objective}</Text>
-      <View style={s.summary}>
+      {!incomplete&&<View style={s.summary}>
         <Text style={s.title}>Etapas da entrega</Text>
-        <Text style={s.muted}>1. ChatGPT · {state==='IDEA'?'Planejamento pendente':'Especificação registrada'}</Text>
-        <Text style={s.muted}>2. Codex · {detail.execution?.result?'Entrega observada no GitHub':'Execução ainda não confirmada'}</Text>
+        <Text style={s.muted}>1. ChatGPT · {detail.events.some(item=>item.type==='spec_ready')?'Especificação registrada':'Planejamento não confirmado'}</Text>
+        <Text style={s.muted}>2. Codex · {detail.execution?.result?'PR observado; autoria não verificada':'Execução ainda não confirmada'}</Text>
         <Text style={s.muted}>3. Diretora · {detail.review.director?'Relatório disponível':'Revisão pendente'}</Text>
         <Text style={s.muted}>4. Você · {state==='OWNER_APPROVED'||state==='RELEASED'?'Aprovação registrada':'Aprovação pendente'}</Text>
         <Text style={s.muted}>Ciclo {detail.mission.iteration} de {detail.mission.brief.maxIterations}</Text>
         {detail.execution?.result&&<Text style={s.status}>Testes: {detail.execution.result.ci==='passed'?'aprovados':detail.execution.result.ci==='failed'?'falharam':'aguardando confirmação'}</Text>}
-      </View>
+      </View>}
       {!incomplete&&<>
       <Text style={s.title}>O que falta</Text>
       {detail.review.gate.blockers.length?detail.review.gate.blockers.map(item=><Text key={item.axis+item.reason} style={s.muted}>{axisLabel(item.axis)}: {item.reason==='Evidencia verificada ausente'?'evidência pendente':item.reason==='Aprovacao do proprietario necessaria'?'aguardando sua decisão':item.reason}</Text>):<Text style={s.muted}>Nenhum bloqueio registrado.</Text>}
