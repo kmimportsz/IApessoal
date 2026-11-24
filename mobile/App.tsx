@@ -1092,6 +1092,27 @@ function PersonalApp() {
     const isReply = item.kind === 'reply';
     const content = isReply ? job.reply! : job.prompt;
     const jobLabel = job.state === 'uncertain' && job.recovery_state ? remoteStates[job.recovery_state] : job.state === 'queued' && connected === false ? 'Aguardando conexão' : labels[job.state];
+    function prepareReconsideration() {
+      if(prompt.trim()||context.trim()){
+        setNotice('Conclua ou limpe o rascunho atual antes de preparar a revisão.');
+        return;
+      }
+      const source=job.memory_id?memories.find(memory=>memory.id===job.memory_id):undefined;
+      if(job.memory_id&&(!source||source.private||source.version!==job.memory_version||
+        (job.memory_auto===1&&!autoGrants.some(g=>g.id===source.id&&g.version===source.version)))){
+        setNotice('A memória original mudou ou foi revogada. Escolha um novo contexto.');
+        return;
+      }
+      const previous='Pedido anterior:\n'+job.prompt+'\n\nResposta anterior:\n'+content;
+      if(previous.length>4000){
+        setNotice('A resposta e seu contexto excedem o limite seguro. Copie apenas os trechos que deseja revisar.');
+        return;
+      }
+      setContext(previous);setContextMemory(source);
+      setProfileAttached(false);
+      setPrompt('Reavalie a conclusão anterior. Confira fatos, premissas e alternativas; corrija erros e indique o que não foi possível verificar.');
+      setNotice('Revisão preparada. Confira o contexto e envie quando desejar.');
+    }
     function actions() {
       const copy = {text: 'Copiar', onPress: () => void perform(async () => { await Clipboard.setStringAsync(content); setNotice('Mensagem copiada.'); })};
       const cancel = {text: 'Cancelar', style: 'cancel' as const};
@@ -1133,6 +1154,8 @@ function PersonalApp() {
             onPress={() => confirm('Gerar outra resposta?', 'O texto e o contexto originais serão enviados novamente. Cada nova resposta usa uma tentativa.',
               () => regenerate(job))} style={s.inlineAction}>
             <Text style={s.link}>Gerar novamente</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={prepareReconsideration} style={s.inlineAction}>
+            <Text style={s.link}>Reavaliar</Text></Pressable>
           <Pressable accessibilityRole="button" onPress={()=>confirm('Compartilhar resposta?', 'O texto será entregue à opção que você escolher no painel do aparelho.',
             async()=>{await Share.share({message:content});})} style={s.inlineAction}><Text style={s.link}>Compartilhar</Text></Pressable>
         </View>}
