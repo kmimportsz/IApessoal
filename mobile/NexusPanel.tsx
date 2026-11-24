@@ -35,10 +35,19 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
     try {await action();} catch(error){setNotice(error instanceof Error?error.message:'A operação falhou.');}
     finally {setBusy(false);}
   }
-  async function open(id:string) {setDetail(await api('/nexus/missions/'+id));}
+  function updateMissionInList(mission: Mission) {
+    setMissions(current=>current?.map(item=>item.id===mission.id?mission:item));
+  }
+  async function open(id:string) {
+    const latest: Detail=await api('/nexus/missions/'+id);
+    setDetail(latest);
+    updateMissionInList(latest.mission);
+  }
   async function event(type:string,value?:unknown) {
     if(!detail)return;
-    await api('/nexus/missions/'+detail.mission.id+'/events',{id:randomUUID(),type,version:detail.version,payload:value});
+    const result: Pick<Detail,'mission'|'version'>=await api('/nexus/missions/'+detail.mission.id+'/events',
+      {id:randomUUID(),type,version:detail.version,payload:value});
+    updateMissionInList(result.mission);
     await open(detail.mission.id);
   }
   function button(label:string,onPress:()=>void) {
