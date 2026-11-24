@@ -1,5 +1,6 @@
 import { assessRequest, competencyChecks, contextualMemory, trustedResearchUrl } from './competence';
 import { prioritizeActions } from './autonomy';
+import { buildExcellenceReviewRequest, buildObjectiveExcellenceRequest, repositoryReadiness } from './excellence';
 import * as WebBrowser from 'expo-web-browser';
 import { githubLink } from './github-links';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -939,6 +940,21 @@ function PersonalApp() {
     </View>;
   }
 
+  function requestDirectorReview(message:string) {
+    if (prompt.trim() || context.trim() || profileAttached) {
+      setNotice('Você tem um rascunho ou contexto selecionado. Preserve-o antes de iniciar uma nova auditoria.');
+      return;
+    }
+    if (projectEdit) {
+      setNotice('Salve ou cancele a edição do plano antes de iniciar a auditoria.');
+      return;
+    }
+    setPrompt(message);
+    setMenu(false);
+    setNotice('Auditoria preparada. Revise e envie quando desejar; nenhuma inferência foi iniciada.');
+    go('Conversa');
+  }
+
   function trackFinding(run: GitHubRun, repo: GitHubRepo) {
     const finding=run.finding;
     if(!finding)return;
@@ -1464,6 +1480,9 @@ function PersonalApp() {
               {repo.checked?' · Última verificação '+formatDate(repo.checked):''}</Text>
             {!!repo.analyzed && <Text style={s.muted}>Última análise · {formatDate(repo.analyzed)}</Text>}
             {!!repo.covered_files && <Text style={s.muted}>Cobertura registrada · {repo.covered_files} arquivo(s)</Text>}
+            <Text style={s.muted}>Diretoria de Excelência · {repositoryReadiness(repo,github.history).title}</Text>
+            <Text style={s.muted}>{repositoryReadiness(repo,github.history).explanation}</Text>
+            <Button label="Diretora: avaliar entrega" onPress={() => requestDirectorReview(buildExcellenceReviewRequest(repo,github.history))}/>
             {repo.availability==='available' && github.account?.state==='active' && repo.state==='active' && !!repo.due && <Text style={s.muted}>Próxima verificação · {formatDate(repo.due)}</Text>}
             {repo.availability==='available' && <View style={s.row}>
               <Button label={repo.state==='active'?'Pausar':'Retomar'} onPress={()=>void perform(()=>githubAction('/github/repository',
@@ -1541,6 +1560,8 @@ function PersonalApp() {
               }}/>}
               <Button label="Editar plano" disabled={!tracking.enabled} onPress={()=>setProjectEdit(item)}/>
               <Button label="Analisar na conversa" onPress={()=>{setContext([item.title,item.description,item.objective,item.pending].filter(Boolean).join('\n'));setContextMemory(undefined);go('Conversa');}}/>
+              <Button label="Diretora: exigir excelência" onPress={()=>requestDirectorReview(buildObjectiveExcellenceRequest(item))}/>
+              {item.status==='done' && <Text style={s.muted}>Conclusão registrada pelo usuário; não equivale a uma certificação de qualidade.</Text>}
               <Button label={item.active ? 'Pausar objetivo' : 'Retomar objetivo'} disabled={item.status==='paused'||item.status==='done'} onPress={() =>
                 void perform(() => change('/initiative/projects','PATCH',{id:item.id,active:!item.active}))} />
               <Button label="Excluir objetivo" onPress={() => confirm('Excluir objetivo acompanhado?', 'A revisão e o registro vinculado serão removidos do gateway.',
