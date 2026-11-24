@@ -84,3 +84,14 @@ node scripts/nexus-codex.mjs --check . ./nexus-recibos
 O modo `--check` confirma a gravação real no diretório de estado usado pelo CLI, nos metadados do Git e no diretório das worktrees e recibos. Se `installation_id` já existir, verifica se o arquivo pode ser aberto para gravação sem alterá-lo. O executor repete a verificação antes de iniciar a sessão. A pré-verificação não chama o CLI e não confirma autenticação. Faça o login no próprio executor e mantenha as credenciais do ambiente gerenciado no local original.
 
 Depois, use o pacote revisado e seu SHA-256 no comando do executor mostrado acima. Valide o evento real `thread.started` no recibo, execute os testes na worktree, revise o novo commit e confira o resultado da reavaliação no NEXUS. O teste completo depende de um executor compatível já disponível e autorizado.
+
+### Codex Web · fluxo pelo navegador
+
+O executor padrão das missões é **Codex Web**. A escolha fica registrada no histórico. O CLI continua disponível em **Selecionar Codex CLI**, antes do início de uma rodada. Uma missão existente sem escolha usa Web e mantém o mesmo pacote exportável para o CLI.
+
+1. No NEXUS, confirme a especificação e compartilhe o briefing. O Issue e o PR indicados são o canal de referência da missão.
+2. Abra [Codex Web](https://chatgpt.com/codex/) no celular. Com uma sessão e um ambiente GitHub já autorizados, escolha o repositório e a branch do briefing, revise a solicitação e inicie manualmente a tarefa. **Registrar início da implementação** atualiza o diário local da missão. A abertura do site e a criação de um Issue não confirmam início de tarefa.
+3. Depois da implementação, confira o resultado no Codex Web. Publique apenas a branch de trabalho ou o PR permitido no GitHub e inclua o marcador da missão. Se o Codex produzir uma branch diferente, revise e leve as mudanças à branch autorizada antes de sincronizar. O NEXUS só aceita o repositório, as branches e o marcador esperados. Esta etapa não exige um terminal local quando a conta dispõe das ações necessárias no Codex Web e no GitHub.
+4. No NEXUS, vincule o PR se necessário e toque em **Conferir Issue, PR e CI**. O commit e o CI são o último resultado observado no GitHub. Eles não confirmam a identidade de quem iniciou ou executou a tarefa. Peça nova auditoria e preserve a aprovação final do proprietário. Quando a Diretora exigir mudanças, compartilhe o novo briefing, inicie a próxima rodada manualmente e sincronize um SHA diferente.
+
+O fluxo não pede nova integração GitHub. A demonstração ponta a ponta depende de uma sessão ativa no Codex Web com o repositório já autorizado. Os testes automatizados exercitam a verificação e a reavaliação por SHA com respostas controladas do GitHub.

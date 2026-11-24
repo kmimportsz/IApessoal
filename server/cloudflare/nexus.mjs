@@ -16,6 +16,8 @@ const url=value=>{
 const reply=(value,status=200)=>Response.json(value,{status,headers:{'Cache-Control':'no-store'}});
 const fail=(message,status=400)=>reply({error:message},status);
 
+const executionModes=['web','cli'];
+
 export function validBrief(b) {
   return b?.schema===1&&idPattern.test(b.id??'')&&number(b.repoId)&&number(b.issue)&&(b.pr==null||number(b.pr))&&
     ref(b.baseRef)&&ref(b.branch)&&b.baseRef!==b.branch&&publicText(b.objective,1200)&&
@@ -23,6 +25,7 @@ export function validBrief(b) {
     Array.isArray(b.criteria)&&b.criteria.length>0&&b.criteria.length<=15&&
     new Set(b.criteria.map(c=>c?.id)).size===b.criteria.length&&
     b.criteria.every(c=>c&&/^[a-z\d][a-z\d_-]{0,31}$/.test(c.id)&&!['constructor','prototype'].includes(c.id)&&publicText(c.description,300)&&publicText(c.expectedEvidence,300))&&
+    (b.executor===undefined||executionModes.includes(b.executor))&&
     (b.maxIterations===undefined||(number(b.maxIterations)&&b.maxIterations<=5));
 }
 
@@ -81,6 +84,8 @@ export function transition(m,event,remote,now) {
   else if(type==='start' && from('SPEC_READY','CHANGES_REQUIRED')){
     if(m.iteration>=m.brief.maxIterations){next.status='PAUSED';next.reason='Limite de iterações atingido.';}
     else {next.status='IMPLEMENTING';next.iteration++;next.ownerApproval=null;next.reason=null;}
+  }else if(type==='executor' && from('IDEA','SPEC_READY','CHANGES_REQUIRED') && executionModes.includes(payload.mode)){
+    next.brief.executor=payload.mode;
   }else if(type==='link_pr' && from('IMPLEMENTING') && !m.brief.pr && number(payload.pr))next.brief.pr=payload.pr;
   else if(type==='decision' && !from('RELEASED','CANCELLED','FAILED') && publicText(payload.reason,600))next.lastDecisionAt=now;
   else if(type==='sync' && from('IMPLEMENTING','CI_PENDING','AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER') && remote){
@@ -162,7 +167,7 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
     if(claimed)return fail('Esta branch já possui uma missão.',409);
     const brief={schema:1,id:draft.id,repoId:draft.repoId,issue:draft.issue,pr:draft.pr??null,baseRef:draft.baseRef,branch:draft.branch,
       objective:draft.objective,nonGoals:draft.nonGoals,constraints:draft.constraints,checks:draft.checks,
-      criteria:draft.criteria.map(({id,description,expectedEvidence})=>({id,description,expectedEvidence})),maxIterations:draft.maxIterations??3};
+      criteria:draft.criteria.map(({id,description,expectedEvidence})=>({id,description,expectedEvidence})),maxIterations:draft.maxIterations??3,executor:draft.executor??'web'};
     const mission={id:brief.id,brief,repository:repo.name,status:'IDEA',createdAt:now,updatedAt:now,revision:null,iteration:0,
       budget:{aiCalls:0,paid:false},reviewer:'IA Pessoal',evidence:{},criteria:{},findings:[],ownerApproval:null};
     const added=await env.DB.prepare('INSERT OR IGNORE INTO nexus_missions_v1 VALUES(?,?,?,0,?) RETURNING id')
@@ -177,7 +182,12 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
   if(method==='GET'&&!match[3]){
     const events=(await env.DB.prepare('SELECT record FROM nexus_events_v1 WHERE mission=? ORDER BY version DESC LIMIT 100')
       .bind(id).all()).results.map(item=>JSON.parse(item.record));
-    return reply({mission:m,version:row.version,events,review:{schema:1,missionId:id,commit:m.revision,
+    const executor=m.brief.executor??'web';
+    const github='https://github.com/'+repo.name;
+    return reply({mission:m,version:row.version,events,execution:{mode:executor,
+      issueUrl:github+'/issues/'+m.brief.issue,prUrl:m.brief.pr?github+'/pull/'+m.brief.pr:null,
+      result:m.remote?.commit?{commit:m.remote.commit,ci:m.remote.ci}:null},
+      review:{schema:1,missionId:id,commit:m.revision,
       repository:m.repository,status:m.status,gate:assessment(m,m.status==='OWNER_APPROVED'),requests:m.findings,criteria:m.criteria,evidence:m.evidence,
       issue:m.remote?.issueUrl,pr:m.remote?.prUrl,delivery:'manual',director:m.director??null,
       correctionPackage:{schema:1,kind:'nexus.revision_request',delivery:'manual',missionId:id,revision:m.revision,
@@ -186,7 +196,7 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
   if(method!=='POST'||!match[3])return fail('Rota inexistente.',404);
   if(repo.state!=='active')return fail('Repositório pausado.',409);
   const event=await read(7000);
-  const eventTypes=['spec_ready','start','link_pr','decision','sync','attest','audit','revision_request','approve','pause','fail','cancel'];
+  const eventTypes=['spec_ready','start','executor','link_pr','decision','sync','attest','audit','revision_request','approve','pause','fail','cancel'];
   if(!idPattern.test(event?.id??'')||!eventTypes.includes(event?.type)||!Number.isSafeInteger(event.version)||
     (event.payload!=null&&(typeof event.payload!=='object'||Array.isArray(event.payload))))return fail('Evento inválido.');
   const duplicate=await env.DB.prepare('SELECT mission FROM nexus_events_v1 WHERE id=?').bind(event.id).first();
@@ -212,7 +222,8 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
   catch(error){return fail(error.message,409);}
   if(event.type==='sync')next.lastSyncAt=now;
   const entry={id:event.id,type:event.type,actor:'owner',at:now,commit:next.revision,
-    status:next.status,reason:event.type==='decision'?event.payload.reason:next.reason??null,
+    status:next.status,reason:event.type==='decision'?event.payload.reason:event.type==='executor'?
+      'Executor selecionado: '+event.payload.mode:next.reason??null,
     evidenceRefs:event.type==='attest'?[event.payload.url,...(event.payload.axis==='experience'?[event.payload.functionalUrl,event.payload.visualUrl]:[])]:[],
     details:event.type==='attest'?{axis:event.payload.axis,criterion:event.payload.criterion,
       status:event.payload.status,reason:event.payload.reason}:event.type==='revision_request'?next.findings.at(-1):event.type==='audit'?next.director:null};

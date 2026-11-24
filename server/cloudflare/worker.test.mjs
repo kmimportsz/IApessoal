@@ -519,7 +519,13 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   const spec={schema:1,id,repoId:12,issue:2,pr:8,baseRef:'main',branch,objective:'Melhorar cadastro',
     checks:['validar'],constraints:['Somente leitura'],nonGoals:[],criteria:[{id:'cadastro',description:'Completar cadastro',
       expectedEvidence:'Vídeo de execução'}]};
-  assert.equal((await call(base,spec)).status,201);
+  const created=await call(base,spec);
+  assert.equal(created.status,201);
+  assert.equal((await created.json()).mission.brief.executor,'web');
+  db.prepare("UPDATE nexus_missions_v1 SET record=json_remove(record,'$.brief.executor') WHERE id=?").run(id);
+  const legacy=(await (await call(base+'/'+id)).json()).execution;
+  assert.deepEqual(legacy,{mode:'web',issueUrl:'https://github.com/owner/repo/issues/2',
+    prUrl:'https://github.com/owner/repo/pull/8',result:null});
   let version=0;
   const path=base+'/'+id;
   async function send(type,payload,status=200,id=crypto.randomUUID()) {
@@ -532,7 +538,12 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   const eventId=crypto.randomUUID();
   await send('spec_ready',undefined,200,eventId);
   assert.equal((await send('spec_ready',undefined,200,eventId)).duplicate,true);
+  assert.equal((await send('executor',{mode:'cli'})).mission.status,'SPEC_READY');
+  assert.equal((await (await call(path)).json()).execution.mode,'cli');
+  await send('executor',{mode:'web'});
+  await send('executor',{mode:'automation'},409);
   await send('start');
+  await send('executor',{mode:'cli'},409);
   branch='other';await send('sync',undefined,409);branch='nexus-test';
   await send('sync');
   const initial=await send('audit',{model:true});
@@ -569,6 +580,8 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   assert.equal((await send('approve',{commit},409)).error.length>0,true);
   const detail=await (await call(path)).json();
   assert.equal(detail.review.delivery,'manual');
+  assert.deepEqual(detail.execution.result,{commit,ci:'failed'});
+  assert.equal(detail.events.filter(event=>event.type==='executor').length,2);
   assert.equal(detail.review.correctionPackage.delivery,'manual');
   assert.equal(detail.review.correctionPackage.revision,commit);
   assert.equal(detail.review.correctionPackage.requests.some(item=>item.location==='validar'),true);
