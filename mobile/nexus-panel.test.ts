@@ -27,7 +27,7 @@ const mission={id:'example',repository:'owner/repo',status:'IDEA',revision:null,
 const other={...mission,id:'other',repository:'owner/other'};
 const details=(current,version)=>({mission:current,version,events:[],review:{gate:{blockers:[]}}});
 
-async function mount(t,request,onNavigate,repos){
+async function mount(t,request,onNavigate,repos,handoff,onHandoffConsumed){
   const prior=globalThis.IS_REACT_ACT_ENVIRONMENT;
   let root;
   // Register cleanup before the first render, including exceptional paths.
@@ -36,7 +36,7 @@ async function mount(t,request,onNavigate,repos){
     else globalThis.IS_REACT_ACT_ENVIRONMENT=prior;
   }});
   globalThis.IS_REACT_ACT_ENVIRONMENT=true;
-  await act(async()=>{root=create(createElement(NexusPanel,{request,onNavigate,repos}));});
+  await act(async()=>{root=create(createElement(NexusPanel,{request,onNavigate,repos,handoff,onHandoffConsumed}));});
   const buttons=()=>root.root.findAllByType('Pressable');
   const label=b=>b.props.accessibilityLabel??b.findAllByType('Text')[0]?.props.children;
   const has=text=>buttons().some(b=>label(b)===text);
@@ -183,4 +183,28 @@ test('Entrada conectada verifica vínculo, invalida edição e reconfirma SHA an
   await ui.press('Conferir vínculo');await ui.press('Confirmar e criar missão');
   assert.equal(prepared,3);assert.equal(created,1);assert.equal(ui.has('Voltar às missões'),true);
   await ui.press('Voltar às missões');assert.equal(ui.has('owner/repo · Ideia recebida'),true);
+});
+
+test('Briefing da Factory segue para entrega confirmada sem simular início do Codex',async t=>{
+  const commit='a'.repeat(40);
+  const handoff={objective:'Melhorar cadastro',projectBrief:'Identidade azul e dados preservados.'};
+  const payload={schema:1,id:'example',repoId:12,issue:2,pr:8,baseRef:'main',branch:'work',objective:handoff.objective,projectBrief:handoff.projectBrief,
+    checks:['validar'],constraints:[],nonGoals:[],criteria:[{id:'delivery',description:'Salvar',expectedEvidence:'Teste funcional'}],maxIterations:3};
+  const registered={...mission,brief:payload,status:'EVIDENCE_MISSING',revision:commit,intake:{kind:'existing_delivery',commit,at:1}};
+  let prepared=0,created=0,consumed=0;
+  const ui=await mount(t,async(path,data)=>{
+    if(path==='/nexus/prepare'){prepared++;assert.equal(data.projectBrief,handoff.projectBrief);assert.equal(data.objective,handoff.objective);return Response.json({brief:payload,commit,repository:'owner/repo'});}
+    if(path==='/nexus/missions'&&data){created++;assert.equal(data.adoptExisting,true);assert.equal(data.expectedCommit,commit);assert.equal(data.projectBrief,handoff.projectBrief);return Response.json({mission:registered,version:0},{status:201});}
+    if(path==='/nexus/missions')return Response.json({missions:[]});
+    return Response.json(details(registered,0));
+  },undefined,[{id:12,name:'owner/repo'}],handoff,()=>{consumed++;});
+  assert.equal(prepared,0);assert.equal(created,0);assert.ok(consumed>=1);
+  await ui.press('owner/repo');
+  await ui.change('Número do Issue','2');await ui.change('Número do PR','8');
+  await ui.change('Checks obrigatórios (um por linha)','validar');
+  await ui.change('Critério de aceite','Salvar');await ui.change('Evidência esperada','Teste funcional');
+  await ui.press('Conferir vínculo');assert.equal(created,0);
+  await ui.press('Criar missão e conferir entrega');
+  assert.equal(created,1);assert.match(ui.rendered(),/autoria da implementação não foi comprovada/);
+  assert.equal(ui.has('Registrar minha aprovação'),false);
 });
