@@ -59,7 +59,7 @@ class GitHubStatusError extends Error {
   constructor(status) { super('GitHub HTTP error'); this.status=status; }
 }
 
-async function installationToken(env, repositoryId, setStage=()=>{}) {
+async function installationToken(env, repositoryId, setStage=()=>{}, includeChecks=false) {
   setStage(2);
   const key = await crypto.subtle.importKey('pkcs8',privateKeyDer(env.GITHUB_PRIVATE_KEY),
     {name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['sign']);
@@ -70,7 +70,7 @@ async function installationToken(env, repositoryId, setStage=()=>{}) {
   const sig = base64url(new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',key,encoder.encode(unsigned))));
   setStage(4);
   const result = await github('/app/installations/'+env.GITHUB_INSTALLATION_ID+'/access_tokens',unsigned+'.'+sig,
-    repositoryId ? {repository_ids:[repositoryId],permissions:{contents:'read',issues:'read',pull_requests:'read'}} :
+    repositoryId ? {repository_ids:[repositoryId],permissions:{contents:'read',issues:'read',pull_requests:'read',...(includeChecks?{checks:'read'}:{})}} :
       {permissions:{metadata:'read'}},524_288,setStage);
   setStage(10);
   if (typeof result.token!=='string') throw Error('Instalação indisponível');
@@ -557,4 +557,36 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
       .bind(success?'finished':'uncertain',accounted??null,id).run();
     await env.DB.prepare('UPDATE github_repos_v15 SET lease=NULL WHERE id=? AND lease=?').bind(repo.id,id).run();
   }
+}
+
+// Only the fixed repository and read endpoints below are available to NEXUS.
+export async function nexusGitHubEvidence(env,repo,brief) {
+  if(!configured(env))throw Error('GitHub indisponível');
+  let token;
+  try {token=await installationToken(env,repo.id,undefined,true);}
+  catch(error){
+    if(!(error instanceof GitHubStatusError)||![403,422].includes(error.status))throw error;
+    token=await installationToken(env,repo.id);
+  }
+  const base=repoPath(repo.name);
+  const issue=await github(base+'/issues/'+brief.issue,token);
+  if(issue.number!==brief.issue||issue.pull_request)throw Error('Issue inválido');
+  const pr=await github(base+'/pulls/'+brief.pr,token);
+  if(pr.number!==brief.pr || pr.base?.repo?.id!==repo.id || pr.head?.repo?.id!==repo.id ||
+    pr.base?.ref!==brief.baseRef || pr.head?.ref!==brief.branch || !shaPattern.test(pr.head?.sha??''))throw Error('PR fora do escopo');
+  const includesMission=value=>typeof value==='string' && value.includes('NEXUS-MISSION: '+brief.id);
+  if(!includesMission(issue.body)||!includesMission(pr.body))throw Error('Missão ausente no Issue ou PR');
+  let ci='unavailable';
+  if(brief.checks.length) {
+    try {
+      const data=await github(base+'/commits/'+pr.head.sha+'/check-runs?filter=latest&per_page=100',token);
+      const observed=(data.check_runs??[]).filter(run=>run.head_sha===pr.head.sha);
+      const required=brief.checks.map(name=>observed.filter(run=>run.name===name && run.app?.slug==='github-actions'));
+      ci=required.some(runs=>runs.some(run=>run.status==='completed'&&run.conclusion==='failure'))?'failed':
+        required.every(runs=>runs.length===1&&runs[0].status==='completed'&&runs[0].conclusion==='success')?'passed':'pending';
+    }catch{ /* Existing installation might lack Checks: read. */ }
+  }
+  return {repo:repo.name,commit:pr.head.sha,ci,issue:brief.issue,pr:brief.pr,
+    issueUrl:'https://github.com/'+repo.name+'/issues/'+brief.issue,
+    prUrl:'https://github.com/'+repo.name+'/pull/'+brief.pr};
 }

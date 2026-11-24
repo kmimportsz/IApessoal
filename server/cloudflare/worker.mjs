@@ -1,3 +1,4 @@
+import { nexusRoute } from './nexus.mjs';
 import { evaluateQualityGate } from './excellence-engine.mjs';
 import { githubRoute, githubWebhook, runGitHubMonitor, syncGitHubInventory } from './github.mjs';
 import { backupRoute } from './backup.mjs';
@@ -307,6 +308,7 @@ export default {
           ORDER BY created DESC LIMIT 1`).bind(project.id).first();
         return json({gate,analysisState:analysis?.state??null});
       }
+      if(pathname.startsWith('/nexus/'))return await nexusRoute({env,path:pathname,method:request.method,read:limit=>readJson(request,limit),now:now.getTime()});
       if (pathname==='/github' || pathname.startsWith('/github/')) return await githubRoute({env,path:pathname,method:request.method,read:limit=>readJson(request,limit),now:now.getTime()});
       if(pathname==='/backup/projects') return backupRoute({db:env.DB,method:request.method,read:limit=>readJson(request,limit)});
       if (pathname === '/automation' || pathname.startsWith('/automation/')) {
