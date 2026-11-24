@@ -1,9 +1,6 @@
 name: IA Pessoal | Validacao 1.6.2
 
 on:
-  push:
-    branches:
-      - integracao-v1.6.2-intelligence-core
   pull_request:
     branches:
       - integracao-v1.6.1
