@@ -37,3 +37,8 @@ test('limita a quantidade de alertas de modo deterministico',()=>{
   const input=Array.from({length:10},(_,i)=>finding(String(i),'alta','alta','new','f'+i+'.ts'));
   assert.equal(prioritizeActions(input,[],t,3).length,3);
 });
+
+test('duplicatas preservam a evidência de maior criticidade',()=>{
+  const input=[finding('media','média'),finding('critica','crítica')];
+  assert.deepEqual(prioritizeActions(input,[],t).map(x=>x.id),['critica']);
+});
