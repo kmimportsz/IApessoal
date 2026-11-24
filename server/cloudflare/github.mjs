@@ -562,6 +562,17 @@ export async function runGitHubMonitor(env,{estimate,charge,model,now=Date.now()
 // Only the fixed repository and read endpoints below are available to NEXUS.
 // Only the authenticated GitHub API metadata identifies the official Codex bot.
 // The summary format is an observation, not a signed attestation of implementation.
+// Bound network work; never claim a current receipt from an incomplete scan.
+export async function collectCodexComments(readPage,maxPages=5){
+  const comments=[];
+  for(let page=1;page<=maxPages;page++){
+    const batch=await readPage(page);
+    if(!Array.isArray(batch)||batch.length>50)return null;
+    comments.push(...batch);
+    if(batch.length<50)return comments;
+  }
+  return null;
+}
 export function codexReviewReceipt(comments,commit,prUrl){
   if(!Array.isArray(comments))return {state:'unavailable'};
   const trusted=comments.filter(c=>c?.user?.id===199175422&&c.user.login==='chatgpt-codex-connector[bot]'&&c.user.type==='Bot'&&
@@ -619,7 +630,7 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false,inclu
   const prUrl='https://github.com/'+repo.name+'/pull/'+brief.pr;
   let codex={state:'unavailable'};
   try{
-    const comments=await github(base+'/issues/'+brief.pr+'/comments?per_page=50&sort=updated&direction=desc',token,undefined,262_144);
+    const comments=await collectCodexComments(page=>github(base+'/issues/'+brief.pr+'/comments?per_page=50&page='+page,token,undefined,262_144));
     // Never store arbitrary comment content. The only retained fields are typed metadata and a GitHub reference.
     codex=codexReviewReceipt(comments,pr.head.sha,prUrl);
   }catch{ /* A missing permission or format never implies a completed review. */ }
