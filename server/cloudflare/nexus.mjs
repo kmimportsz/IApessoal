@@ -51,6 +51,7 @@ export function directorReport(remote,now) {
       text:check.name+': '+(check.status==='passed'?'sucesso registrado no GitHub Actions':'falha registrada no GitHub Actions'),
       url:remote.prUrl+'/checks',
     })),
+    ...(remote.codex?.state==='completed'?[{text:'Codex: revisão registrada neste commit'+(remote.codex.unresolved?' · apontamentos em aberto':remote.codex.findings?' · apontamentos registrados, sem pendências informadas':' · sem apontamentos informados')+'.',url:remote.codex.url}]:[]),
     ...checked.map(file=>({text:file.path+' · '+file.lines+' linhas na amostra',
       url:'https://github.com/'+remote.repo+'/blob/'+remote.commit+'/'+file.path.split('/').map(encodeURIComponent).join('/')})),
   ];
@@ -58,6 +59,8 @@ export function directorReport(remote,now) {
     text:'Há uma construção compatível com teste ignorado ou executado de forma exclusiva em '+file.path+
       '. Confirme se pertence ao código executado e se cobre o comportamento alterado.',
   }));
+  if(remote.codex?.state==='completed'&&remote.codex.unresolved)
+    hypotheses.push({text:'O Codex informou apontamentos não resolvidos neste commit. Consulte o relatório antes de decidir.'});
   if(files.some(file=>file.role!=='Testes')&&!files.some(file=>file.role==='Testes')&&remote.filesAvailable)
     hypotheses.push({text:'A lista consultada inclui alterações sem arquivo de teste correspondente. Confirme onde esses comportamentos são verificados.'});
   if(files.some(file=>file.path.startsWith('.github/workflows/')))
@@ -186,7 +189,8 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
     const github='https://github.com/'+repo.name;
     return reply({mission:m,version:row.version,events,execution:{mode:executor,
       issueUrl:github+'/issues/'+m.brief.issue,prUrl:m.brief.pr?github+'/pull/'+m.brief.pr:null,
-      result:m.remote?.commit?{commit:m.remote.commit,ci:m.remote.ci}:null},
+      result:m.remote?.commit?{commit:m.remote.commit,ci:m.remote.ci}:null,
+      ...(m.remote?.codex?{codex:m.remote.codex}:{})},
       review:{schema:1,missionId:id,commit:m.revision,
       repository:m.repository,status:m.status,gate:assessment(m,m.status==='OWNER_APPROVED'),requests:m.findings,criteria:m.criteria,evidence:m.evidence,
       issue:m.remote?.issueUrl,pr:m.remote?.prUrl,delivery:'manual',director:m.director??null,
