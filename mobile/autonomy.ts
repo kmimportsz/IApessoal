@@ -20,21 +20,21 @@ export function prioritizeActions(
   github:GitHubSignal[], reviews:ProjectSignal[], now=Date.now(), limit=3,
 ):PriorityItem[] {
   const candidates:PriorityItem[]=[];
-  const seen = new Set<string>();
+  const strongest = new Map<string,PriorityItem>();
   for (const run of github) {
     const finding=run.finding;
     if(run.finding_state!=='new'||!finding || !finding.path.trim() ||
        !Number.isSafeInteger(finding.line)||finding.line<=0 ||
        !finding.problem.trim() || !Object.hasOwn(risk,finding.priority)) continue;
     const key='gh:'+run.repo+':'+finding.path+':'+finding.line;
-    if(seen.has(key))continue;
-    seen.add(key);
     const age=Number.isFinite(now-run.created) ? Math.max(0,now-run.created) : 365*86400000;
     const freshness=age<=7*86400000?6:age<=30*86400000?2:0;
     const confidence=assurance[finding.confidence]??-14;
-    candidates.push({kind:'github',id:run.id,score:risk[finding.priority]+confidence+freshness,
-      reason:finding.priority==='crítica'?'Risco crítico requer revisão humana':'Descoberta pendente com evidência de arquivo'});
+    const suggestion:PriorityItem={kind:'github',id:run.id,score:risk[finding.priority]+confidence+freshness,
+      reason:finding.priority==='crítica'?'Risco crítico requer revisão humana':'Descoberta pendente com evidência de arquivo'};
+    if(!strongest.has(key)||suggestion.score>strongest.get(key)!.score) strongest.set(key,suggestion);
   }
+  candidates.push(...strongest.values());
   for (const review of reviews) {
     if(review.state!=='ready'||!review.summary?.trim()||!review.action?.trim())continue;
     const age=Number.isFinite(now-review.created)?Math.max(0,now-review.created):365*86400000;
