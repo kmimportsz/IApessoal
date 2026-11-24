@@ -6,7 +6,7 @@ import { automationRoute, runProjectAnalyses } from './automation.mjs';
 import { calculate, calculatorTool } from './calculator.mjs';
 import { searchPublic, searchLimit } from './research.mjs';
 import { identity, officialIdentity } from './persona.mjs';
-import { cognitiveProfile } from './cognitive-core.mjs';
+import { cognitiveProfile, metacognitiveProfile } from './cognitive-core.mjs';
 import { initiativeRoute, reviewProjects } from './initiative.mjs';
 import { setupPage } from './setup.mjs';
 import { describe, idPattern, interpret, providerFailure, readReceipt, replyTtl, seal, unseal } from './recovery.mjs';
@@ -30,7 +30,8 @@ export function selectModel(prompt, env) {
   const cognitive = cognitiveProfile(prompt);
   const contextualComplex = cognitive.depth==='analitico' &&
     cognitive.domains.some(domain=>['negocios','engenharia','matematica','planejamento'].includes(domain));
-  const id = env.MODEL ?? (complex || contextualComplex ? advanced : economical);
+  const explicitReview = metacognitiveProfile(prompt).triggers.includes('revisao');
+  const id = env.MODEL ?? (complex || contextualComplex || explicitReview ? advanced : economical);
   return Object.hasOwn(models, id) ? {id, ...models[id]} : null;
 }
 
