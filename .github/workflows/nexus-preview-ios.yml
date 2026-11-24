@@ -1,0 +1,39 @@
+name: NEXUS | Exportar previa iOS isolada
+on:
+  push:
+    branches: [preview/nexus-ios-8045b2c]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Instalar dependencias
+        working-directory: mobile
+        run: npm ci --ignore-scripts
+      - name: Validar TypeScript e testes
+        working-directory: mobile
+        run: |
+          npm run check
+          npm test
+      - name: Exportar bundle iOS
+        working-directory: mobile
+        env:
+          CI: 'true'
+        run: npx expo export --platform ios --output-dir ../nexus-ios-export
+      - name: Guardar exportacao verificavel
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-ios-8045b2c
+          path: nexus-ios-export/
+          if-no-files-found: error
+          retention-days: 3
