@@ -1,5 +1,6 @@
-export function githubLink(repo: string, commit?: string, path?: string, line?: number): string | undefined {
+export function githubLink(repo: string, commit?: string, path?: string, line?: number, lastLine?: number): string | undefined {
   const validPart = (part: string) => /^[\w.@+-]+$/.test(part) && part !== '.' && part !== '..';
+  if (lastLine!==undefined && (line===undefined || !Number.isSafeInteger(lastLine) || lastLine<line)) return;
   const names = repo.split('/');
   if (names.length !== 2 || names.some(part => !validPart(part))) return;
   const base = 'https://github.com/' + names.map(encodeURIComponent).join('/');
@@ -8,5 +9,5 @@ export function githubLink(repo: string, commit?: string, path?: string, line?: 
   if (path === undefined) return line === undefined ? base + '/commit/' + commit : undefined;
   const parts = path.split('/');
   if (parts.some(part => !validPart(part)) || (line !== undefined && (!Number.isSafeInteger(line) || line < 1))) return;
-  return base + '/blob/' + commit + '/' + parts.map(encodeURIComponent).join('/') + (line ? '#L' + line : '');
+  return base + '/blob/' + commit + '/' + parts.map(encodeURIComponent).join('/') + (line ? '#L' + line + (lastLine && lastLine>line ? '-L' + lastLine : '') : '');
 }

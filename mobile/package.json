@@ -1,6 +1,6 @@
 {
   "name": "ipe-mobile",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "private": true,
   "main": "index.ts",
   "scripts": {
@@ -23,6 +23,7 @@
     "expo-speech-recognition": "^3.1.3",
     "expo-sqlite": "~58.0.18",
     "expo-updates": "~58.0.22",
+    "expo-web-browser": "~58.1.0",
     "react": "19.3.0",
     "react-native": "0.88.1",
     "react-native-safe-area-context": "~5.11.1",
