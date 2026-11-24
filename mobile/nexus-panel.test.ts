@@ -27,7 +27,7 @@ const mission={id:'example',repository:'owner/repo',status:'IDEA',revision:null,
 const other={...mission,id:'other',repository:'owner/other'};
 const details=(current,version)=>({mission:current,version,events:[],review:{gate:{blockers:[]}}});
 
-async function mount(t,request,onNavigate){
+async function mount(t,request,onNavigate,repos){
   const prior=globalThis.IS_REACT_ACT_ENVIRONMENT;
   let root;
   // Register cleanup before the first render, including exceptional paths.
@@ -36,13 +36,14 @@ async function mount(t,request,onNavigate){
     else globalThis.IS_REACT_ACT_ENVIRONMENT=prior;
   }});
   globalThis.IS_REACT_ACT_ENVIRONMENT=true;
-  await act(async()=>{root=create(createElement(NexusPanel,{request,onNavigate}));});
+  await act(async()=>{root=create(createElement(NexusPanel,{request,onNavigate,repos}));});
   const buttons=()=>root.root.findAllByType('Pressable');
   const label=b=>b.props.accessibilityLabel??b.findAllByType('Text')[0]?.props.children;
   const has=text=>buttons().some(b=>label(b)===text);
   const press=async text=>{const b=buttons().find(b=>label(b)===text);assert.ok(b,'Ação ausente: '+text);assert.equal(b.props.disabled,false);await act(async()=>b.props.onPress());};
   const rendered=()=>JSON.stringify(root.toJSON());
-  return {has,press,rendered};
+  const change=async(label,value)=>{const field=root.root.findAllByType('TextInput').find(x=>x.props.accessibilityLabel===label);assert.ok(field,'Campo ausente: '+label);await act(async()=>field.props.onChangeText(value));};
+  return {has,press,rendered,change};
 }
 
 test('Missão abre em vista exclusiva, esconde JSON e preserva transição ao voltar',async t=>{
@@ -153,4 +154,33 @@ test('AutoPilot usa versões confirmadas e para sem aprovar',async t=>{
   assert.deepEqual(sent,['sync:5','audit:6']);
   assert.ok(ui.rendered().includes('Aguardando evidências'));
   assert.equal(ui.has('Registrar minha aprovação'),false);
+});
+
+test('Entrada conectada verifica vínculo, invalida edição e reconfirma SHA antes de criar',async t=>{
+  const commit='a'.repeat(40);
+  const payload={schema:1,id:'example',repoId:12,issue:2,pr:8,baseRef:'main',branch:'work',objective:'Cadastro',checks:['validar'],constraints:[],nonGoals:[],criteria:[{id:'delivery',description:'Salvar',expectedEvidence:'Teste funcional'}],maxIterations:3};
+  const registered={...mission,brief:payload};
+  let prepared=0,created=0,fail=true;
+  const ui=await mount(t,async(path,data)=>{
+    if(path==='/nexus/prepare'){
+      prepared++;assert.equal(data.repoId,12);assert.equal(data.issue,2);assert.equal(data.pr,8);assert.deepEqual(data.checks,['validar']);
+      if(fail)return Response.json({error:'Vínculo divergente'},{status:409});
+      return Response.json({brief:{...payload,objective:data.objective},commit,repository:'owner/repo'});
+    }
+    if(path==='/nexus/missions'&&data){created++;assert.equal(data.expectedCommit,commit);assert.equal(data.objective,'Cadastro atualizado');return Response.json({mission:registered,version:0},{status:201});}
+    if(path==='/nexus/missions')return Response.json({missions:[]});
+    return Response.json(details(registered,0));
+  },undefined,[{id:12,name:'owner/repo'}]);
+  await ui.press('Vincular entrega do GitHub');await ui.press('owner/repo');
+  await ui.change('Número do Issue','2');await ui.change('Número do PR','8');
+  await ui.change('Objetivo da entrega','Cadastro');await ui.change('Checks obrigatórios (um por linha)','validar');
+  await ui.change('Critério de aceite','Salvar');await ui.change('Evidência esperada','Teste funcional');
+  await ui.press('Conferir vínculo');assert.match(ui.rendered(),/Vínculo divergente/);
+  assert.equal(ui.has('Confirmar e criar missão'),false);
+  fail=false;await ui.press('Conferir vínculo');assert.equal(ui.has('Confirmar e criar missão'),true);
+  assert.equal(created,0);
+  await ui.change('Objetivo da entrega','Cadastro atualizado');assert.equal(ui.has('Confirmar e criar missão'),false);
+  await ui.press('Conferir vínculo');await ui.press('Confirmar e criar missão');
+  assert.equal(prepared,3);assert.equal(created,1);assert.equal(ui.has('Voltar às missões'),true);
+  await ui.press('Voltar às missões');assert.equal(ui.has('owner/repo · Ideia recebida'),true);
 });
