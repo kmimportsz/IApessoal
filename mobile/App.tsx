@@ -1400,7 +1400,7 @@ function PersonalApp() {
       </>}
       {tab === 'Projetos' && <>
         <Text style={s.title}>Projetos</Text>
-        {settings.url===trackingGateway && <NexusPanel request={request}/>}
+        {settings.url===trackingGateway && <NexusPanel request={request} onNavigate={()=>panels.current?.scrollTo({y:0,animated:false})}/>}
         {github && <View style={s.card}>
           <Text style={s.section}>Repositórios GitHub</Text>
           {!metrics && <View style={s.card}>
