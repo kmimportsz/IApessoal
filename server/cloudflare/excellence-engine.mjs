@@ -75,3 +75,17 @@ export const excellencePolicy = [
   'Voce pode recomendar refatoracao radical quando uma causa estrutural a justificar. Nao altere repositorios, dados ou sistemas sem permissao explicita e ferramentas adequadas.',
   'Ao delegar ao Codex, forneca escopo, restricoes, criterios de aceite, testes, evidencias requeridas e condicao de parada. Nao afirme ter delegado sem integracao real.',
 ].join(' ');
+
+/** A diretoria de excelencia so intervem em pedidos de construcao, revisao ou entrega. */
+export function excellenceGuidance(prompt) {
+  const text=String(prompt??'').split('\n\nMensagem atual:\n').at(-1)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  const project=/\b(projeto|aplicativo|sistema|codigo|site|software|app|codex|implementa\w*|desenvolv\w*|publica\w*|release|entrega|repositorio|github)\b/;
+  const intentional=/\b(criar|crie|construir|desenvolver|desenvolva|avaliar|avalie|revisar|revise|melhorar|melhore|corrigir|implementar|finalizar|entregar|publicar|deploy|arquitetura|qualidade|perfeito|pronto|funciona|seguranca|seguro)\b/;
+  return project.test(text) && (intentional.test(text) || text.length>350) ? excellencePolicy : '';
+}
+
+export const autonomyQualityGuidance =
+  'Ao revisar objetivo autorizado, identifique o risco ou requisito com maior impacto verificavel; nao diga que o projeto esta finalizado ou perfeito sem provas. Se nao houver evidencia ou proxima acao concreta, abstenha-se e nao gere tarefa artificial. Nao amplie permissao nem escopo.';
+export const repoQualityGuidance =
+  'Priorize problemas verificaveis de funcionamento, experiencia, acessibilidade e seguranca; nao declare que um codigo passou em testes nao executados. Nao classifique como concluida uma entrega so por inspecao textual.';
