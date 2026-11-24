@@ -1,0 +1,51 @@
+name: IA Pessoal | Validacao 1.6.2
+
+on:
+  pull_request:
+    branches:
+      - integracao-v1.6.1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway:
+    name: Gateway e nucleo cognitivo
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verificar sintaxe e executar testes do Worker
+        run: |
+          node --check server/cloudflare/cognitive-core.mjs
+          node --check server/cloudflare/persona.mjs
+          node --check server/cloudflare/worker.mjs
+          node --test server/cloudflare/*.test.mjs
+  mobile:
+    name: TypeScript e testes Expo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Instalar dependencias sem modificar lockfile
+        run: npm ci --ignore-scripts
+      - name: Checar TypeScript
+        run: npm run check
+      - name: Executar testes deterministas
+        run: npm test

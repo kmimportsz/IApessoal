@@ -1,8 +1,10 @@
 import { assessRequest, competencyChecks, contextualMemory, trustedResearchUrl } from './competence';
+import { prioritizeActions } from './autonomy';
+import { buildExcellenceReviewRequest, buildObjectiveExcellenceRequest, repositoryReadiness } from './excellence';
 import * as WebBrowser from 'expo-web-browser';
 import { githubLink } from './github-links';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StatusBar, Share, Linking,
+import { ActivityIndicator, Animated, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StatusBar, Share, Linking,
   StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useNetInfo } from '@react-native-community/netinfo';
@@ -101,7 +103,7 @@ const receiptCodes: Record<string, string> = {
 const tabIcons: Record<Tab, IconName> = {Conversa: 'chat', Projetos: 'layers', Memórias: 'layers', Laboratório: 'flask', Ajustes: 'settings'};
 const connectionLabels = {unconfigured: 'Modo local', offline: 'Offline', checking: 'Verificando modelo',
   unreachable: 'Servidor indisponível', disabled: 'Modelo desativado', auth: 'Credencial recusada', online: 'Gateway online'};
-type ChatRow = { key: string; date: number; kind: 'date' | 'prompt' | 'reply'; job?: Job };
+type ChatRow = { key: string; date: number; kind: 'date' | 'prompt' | 'reply' | 'thinking'; job?: Job };
 type MemoryRevision = {memory_id: string; version: number; changed: number};
 const time = (stamp: number) => new Date(stamp).toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'});
 const money = (cents: number) => (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -109,6 +111,28 @@ const formatDate = (timestamp: number) => new Date(timestamp).toLocaleDateString
 
 export default function App() {
   return <SafeAreaProvider><PersonalApp /></SafeAreaProvider>;
+}
+
+
+function ThinkingDots({label}: {label:string}) {
+  const progress=useRef(new Animated.Value(0)).current;
+  useEffect(()=>{
+    const motion=Animated.loop(Animated.timing(progress,{toValue:3,duration:1250,useNativeDriver:true}));
+    motion.start();
+    return ()=>motion.stop();
+  },[progress]);
+  const sequence=[
+    [0.4,1,0.4,0.4],
+    [0.4,0.4,1,0.4],
+    [0.4,0.4,0.4,1],
+  ];
+  return <View style={s.thinkingIndicator} accessibilityLabel={label} accessibilityLiveRegion="polite">
+    <View style={s.thinkingDots} importantForAccessibility="no-hide-descendants">
+      {sequence.map((outputRange,index)=><Animated.View key={index}
+        style={[s.thinkingDot,{opacity:progress.interpolate({inputRange:[0,1,2,3],outputRange})}]}/>)}
+    </View>
+    <Text style={s.thinkingLabel}>{label}</Text>
+  </View>;
 }
 
 function PersonalApp() {
@@ -361,6 +385,10 @@ function PersonalApp() {
       if (chatQuery.trim() && !matches(job.prompt + ' ' + (job.reply ?? '') + ' ' + formatDate(job.created), chatQuery.trim(), 2)) continue;
       items.push({key: job.id + ':p', kind: 'prompt', date: job.created, job});
       if (job.reply) items.push({key: job.id + ':r', kind: 'reply', date: job.reply_at ?? job.created, job});
+      else if (job.state==='queued' || job.state==='sending' ||
+        (job.state==='uncertain' && ['processing','started'].includes(job.recovery_state ?? ''))) {
+        items.push({key:job.id+':thinking',kind:'thinking',date:job.created+1,job});
+      }
     }
     items.sort((a, b) => a.date - b.date);
     const result: ChatRow[] = [];
@@ -444,10 +472,13 @@ function PersonalApp() {
   function clearContext() { setContext(''); setContextMemory(undefined); }
 
   function confirmSend(job: Job) {
-    confirm('Enviar mensagem?', job.route === 'paid'
-      ? 'O texto exibido na conversa, incluindo o contexto, irá ao gateway e à OpenAI. A chamada pode consumir seu orçamento.'
-      : 'O texto exibido no balão, incluindo o contexto selecionado, será enviado ao gateway para gerar a resposta.',
-    () => send(job));
+    // Mensagens comuns nao exigem segunda confirmacao. Custos pagos continuam protegidos.
+    if (job.route === 'paid') {
+      confirm('Confirmar envio pago?', 'Esta chamada pode consumir seu orçamento. Confira o conteúdo e o contexto antes de enviar.',
+        () => send(job));
+    } else {
+      void perform(() => send(job));
+    }
   }
 
   useEffect(()=>{
@@ -909,6 +940,56 @@ function PersonalApp() {
     </View>;
   }
 
+  function requestDirectorReview(message:string) {
+    if (prompt.trim() || context.trim() || profileAttached) {
+      setNotice('Você tem um rascunho ou contexto selecionado. Preserve-o antes de iniciar uma nova auditoria.');
+      return;
+    }
+    if (projectEdit) {
+      setNotice('Salve ou cancele a edição do plano antes de iniciar a auditoria.');
+      return;
+    }
+    setPrompt(message);
+    setMenu(false);
+    setNotice('Auditoria preparada. Revise e envie quando desejar; nenhuma inferência foi iniciada.');
+    go('Conversa');
+  }
+
+  function trackFinding(run: GitHubRun, repo: GitHubRepo) {
+    const finding=run.finding;
+    if(!finding)return;
+    if(!tracking?.enabled) {
+      setNotice('Ative o acompanhamento em Projetos antes de criar uma revisão.');
+      go('Projetos');
+      return;
+    }
+    const title=('Investigar '+repo.name+': '+finding.path.split('/').at(-1)).slice(0,80);
+    const pending=('Reavaliar possível achado em '+repo.name+' no commit '+run.commit_sha.slice(0,12)+
+      ', arquivo '+finding.path+', linha '+finding.line+'. '+finding.problem).slice(0,240);
+    if(tracking.projects.some(project=>project.active && project.title===title && project.pending===pending)){
+      setNotice('Esta investigação já possui um acompanhamento ativo.');
+      return;
+    }
+    confirm('Autorizar acompanhamento e análise?', 'Criar uma revisão para daqui a 24 horas e autorizar uma análise automática deste objetivo, dentro da cota gratuita existente? Nenhum código será alterado.',async()=>{
+      const id=randomUUID();
+      await change('/initiative/projects','POST',{
+        id,title,pending,due:Date.now()+86_400_000,
+      });
+      // A concessão é explícita e restrita ao objetivo recém-criado.
+      // Uma falha na segunda etapa não apaga o projeto nem inventa autorização.
+      try {
+        const response=await request('/automation/project',{id,enabled:true});
+        const data=await response.json();
+        if(!response.ok)throw Error(data.error??'Não foi possível autorizar a análise.');
+        await refreshAutomation();
+        setNotice('Acompanhamento criado e análise autorizada dentro da cota existente.');
+      }catch{
+        setNotice('Acompanhamento criado, mas a análise automática não foi autorizada. Confira em Projetos.');
+      }
+      go('Projetos');
+    });
+  }
+
   function findingCard(run: GitHubRun, repo: GitHubRepo) {
     const f=run.finding;
     if(!f)return null;
@@ -930,14 +1011,14 @@ function PersonalApp() {
       <Text style={s.text}>Sugestão · {f.suggestion}</Text>
       <View style={s.row}>
         <Button label="Discutir" onPress={()=>discussFinding(run)}/>
+        {run.finding_state==='new' && tracking?.enabled && <Button label="Acompanhar em 24h" onPress={()=>trackFinding(run,repo)}/>}
         {run.finding_state==='new' && <Button label="Dispensar" onPress={()=>void perform(()=>githubAction('/github/finding',{id:run.finding_id,state:'dismissed'}))}/>}
         {run.finding_state!=='resolved' && <Button label="Marcar como resolvida" onPress={()=>void perform(()=>githubAction('/github/finding',{id:run.finding_id,state:'resolved'}))}/>}
       </View>
     </View>;
   }
 
-  const githubInitiative=github?.history.find(run=>run.finding_state==='new'&&['crítica','alta','média'].includes(run.finding?.priority??''));
-  const githubInitiativeRepo=github?.repos.find(repo=>repo.id===githubInitiative?.repo);
+  const priorityItems=prioritizeActions(github?.history??[],automation?.entries??[]);
 
   function useInitiative(item: Initiative) {
     const result = automation?.entries.find(entry => entry.project_id === item.id && entry.cycle === (item.cycle ?? 0));
@@ -988,6 +1069,19 @@ function PersonalApp() {
     if (item.kind === 'date') return <View style={s.day}><View style={s.rule} /><Text style={s.dayText}>
       {formatDate(item.date) === formatDate(Date.now()) ? 'Hoje' : formatDate(item.date)}
     </Text><View style={s.rule} /></View>;
+    if (item.kind === 'thinking') {
+      const pending = item.job!;
+      const label = pending.state==='queued'
+        ? (connected === false ? 'Aguardando conexão' : 'Aguardando envio')
+        : pending.state==='sending' ? 'Enviando'
+        : 'Pensando';
+      return <View style={s.messageRow}>
+        <Avatar small ring={palette.blueDark} choice={avatarChoice} photo={photoUri} />
+        <View style={[s.bubble,s.assistantBubble,s.thinkingBubble]}>
+          <ThinkingDots label={label}/>
+        </View>
+      </View>;
+    }
     const job = item.job!;
     const isReply = item.kind === 'reply';
     const content = isReply ? job.reply! : job.prompt;
@@ -1019,7 +1113,9 @@ function PersonalApp() {
       <View style={[s.bubble, isReply ? s.assistantBubble : s.userBubble]}>
         <Text style={s.message} selectable>{content}</Text>
         <View style={s.bubbleMeta}>
-          <Text style={s.muted}>{isReply && job.response_model ? job.response_model + ' · ' : ''}{!isReply && job.state !== 'done' ? jobLabel + ' · ' : ''}{time(item.date)}</Text>
+          <Text style={s.muted}>{isReply && job.response_model ? job.response_model + ' · ' : ''}{!isReply && (job.state==='rejected' ||
+            (job.state==='uncertain' && !['processing','started'].includes(job.recovery_state ?? '')) ||
+            (job.state==='queued' && connected===false)) ? jobLabel + ' · ' : ''}{time(item.date)}</Text>
           <Pressable accessibilityRole="button" accessibilityLabel="Ações da mensagem" onPress={actions} style={s.messageAction}>
             <Icon name="more" size={19} />
           </Pressable>
@@ -1128,7 +1224,43 @@ function PersonalApp() {
             </>}
           </View>}
           ListFooterComponent={<View style={s.timelineFooter}>
-            {githubInitiative && githubInitiativeRepo && findingCard(githubInitiative,githubInitiativeRepo)}
+            {priorityItems.length>0 && <View style={s.card}>
+              <Text style={s.kicker}>CENTRAL DE PRIORIDADES · ANÁLISES AUTORIZADAS</Text>
+              <Text style={s.muted}>A IA identificou ações que merecem atenção. Nenhuma alteração externa será executada sem sua autorização.</Text>
+              {priorityItems.map(item=>{
+                if(item.kind==='github'){
+                  const run=github?.history.find(r=>r.id===item.id);
+                  const repo=github?.repos.find(r=>r.id===run?.repo);
+                  if(!run?.finding || !repo)return null;
+                  return <View key={'priority:'+item.id} style={s.report}>
+                    <Text style={s.kicker}>{repo.name} · {run.finding.priority.toUpperCase()}</Text>
+                    <Text style={s.label}>{run.finding.problem}</Text>
+                    <Text style={s.muted}>{item.reason} · Confiança {run.finding.confidence}. Hipótese sujeita a validação.</Text>
+                    <View style={s.row}>
+                      <Button label="Investigar" onPress={()=>discussFinding(run)}/>
+                      {tracking?.enabled && <Button label="Acompanhar 24h" onPress={()=>trackFinding(run,repo)}/>}
+                      {codeLink('Código',githubLink(repo.name,run.commit_sha,run.finding.path,run.finding.line))}
+                    </View>
+                  </View>;
+                }
+                const analysis=automation?.entries.find(a=>a.run_id===item.id);
+                if(!analysis?.summary)return null;
+                return <View key={'priority:'+item.id} style={s.report}>
+                  <Text style={s.kicker}>PROJETO · REVISÃO AUTORIZADA</Text>
+                  <Text style={s.label}>{analysis.title}</Text>
+                  <Text style={s.muted}>{analysis.summary}</Text>
+                  <Text style={s.text}>{analysis.action}</Text>
+                  <View style={s.row}>
+                    <Button label="Discutir próximo passo" onPress={()=>{
+                      setContext([analysis.title,analysis.summary,analysis.action].filter(Boolean).join('\n'));
+                      setContextMemory(undefined);
+                      go('Conversa');
+                    }}/>
+                    <Button label="Ver projeto" onPress={()=>go('Projetos')}/>
+                  </View>
+                </View>;
+              })}
+            </View>}
             {newestInitiative && <View style={s.card}>
               <Text style={s.kicker}>{initiativeResult?.summary ? 'ANÁLISE CONCLUÍDA' :
                 initiativeResult?.state === 'started' ? 'ANÁLISE EM PROCESSAMENTO' :
@@ -1348,6 +1480,9 @@ function PersonalApp() {
               {repo.checked?' · Última verificação '+formatDate(repo.checked):''}</Text>
             {!!repo.analyzed && <Text style={s.muted}>Última análise · {formatDate(repo.analyzed)}</Text>}
             {!!repo.covered_files && <Text style={s.muted}>Cobertura registrada · {repo.covered_files} arquivo(s)</Text>}
+            <Text style={s.muted}>Diretoria de Excelência · {repositoryReadiness(repo,github.history).title}</Text>
+            <Text style={s.muted}>{repositoryReadiness(repo,github.history).explanation}</Text>
+            <Button label="Diretora: avaliar entrega" onPress={() => requestDirectorReview(buildExcellenceReviewRequest(repo,github.history))}/>
             {repo.availability==='available' && github.account?.state==='active' && repo.state==='active' && !!repo.due && <Text style={s.muted}>Próxima verificação · {formatDate(repo.due)}</Text>}
             {repo.availability==='available' && <View style={s.row}>
               <Button label={repo.state==='active'?'Pausar':'Retomar'} onPress={()=>void perform(()=>githubAction('/github/repository',
@@ -1425,6 +1560,8 @@ function PersonalApp() {
               }}/>}
               <Button label="Editar plano" disabled={!tracking.enabled} onPress={()=>setProjectEdit(item)}/>
               <Button label="Analisar na conversa" onPress={()=>{setContext([item.title,item.description,item.objective,item.pending].filter(Boolean).join('\n'));setContextMemory(undefined);go('Conversa');}}/>
+              <Button label="Diretora: exigir excelência" onPress={()=>requestDirectorReview(buildObjectiveExcellenceRequest(item))}/>
+              {item.status==='done' && <Text style={s.muted}>Conclusão registrada pelo usuário; não equivale a uma certificação de qualidade.</Text>}
               <Button label={item.active ? 'Pausar objetivo' : 'Retomar objetivo'} disabled={item.status==='paused'||item.status==='done'} onPress={() =>
                 void perform(() => change('/initiative/projects','PATCH',{id:item.id,active:!item.active}))} />
               <Button label="Excluir objetivo" onPress={() => confirm('Excluir objetivo acompanhado?', 'A revisão e o registro vinculado serão removidos do gateway.',
@@ -1700,6 +1837,11 @@ const s = StyleSheet.create({
   messageRow: {flexDirection: 'row', alignItems: 'flex-start', gap: 8},
   userRow: {justifyContent: 'flex-end'},
   replyActions: {flexDirection: 'row', flexWrap: 'wrap', gap: 14},
+  thinkingBubble: {paddingVertical: 11, paddingHorizontal: 15, minWidth: 112},
+  thinkingIndicator: {flexDirection:'row',alignItems:'center',gap:9,minHeight:25},
+  thinkingDots: {flexDirection:'row',alignItems:'center',gap:4},
+  thinkingDot: {height:6,width:6,borderRadius:3,backgroundColor:'#57A0FF'},
+  thinkingLabel: {color:'#A9C5E7',fontSize:13,fontWeight:'600'},
   bubble: {maxWidth: '87%', paddingTop: 9, paddingHorizontal: 12, paddingBottom: 2, borderRadius: 18, borderWidth: 1},
   assistantBubble: {backgroundColor: palette.assistant, borderColor: '#263649', borderTopLeftRadius: 7},
   userBubble: {backgroundColor: palette.user, borderColor: '#205694', borderTopRightRadius: 7},

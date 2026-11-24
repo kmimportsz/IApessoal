@@ -4,6 +4,7 @@ import { automationRoute, runProjectAnalyses } from './automation.mjs';
 import { calculate, calculatorTool } from './calculator.mjs';
 import { searchPublic, searchLimit } from './research.mjs';
 import { identity, officialIdentity } from './persona.mjs';
+import { cognitiveProfile } from './cognitive-core.mjs';
 import { initiativeRoute, reviewProjects } from './initiative.mjs';
 import { setupPage } from './setup.mjs';
 import { describe, idPattern, interpret, providerFailure, readReceipt, replyTtl, seal, unseal } from './recovery.mjs';
@@ -22,7 +23,12 @@ export function selectModel(prompt, env) {
   const question = prompt.split('\n\nMensagem atual:\n').at(-1).normalize('NFD').replace(/\p{M}/gu, '');
   const complex = question.length > 460 || /R\$.*R\$|\brealista.*\d/i.test(question) ||
     /\b(compare|comparar|analise|analisar|estrategia|planeje|arquitetura|demonstre|prove|raciocinio|passo a passo|investir|investimento|receita|lucro|rentabilidade|risco financeiro)\b/i.test(question);
-  const id = env.MODEL ?? (complex ? advanced : economical);
+  // Analise contextual exige modelo mais capaz quando houver risco ou decisao tecnica.
+  // Uma chamada por pergunta: nao criar inferencias adicionais e respeitar override do servidor.
+  const cognitive = cognitiveProfile(prompt);
+  const contextualComplex = cognitive.depth==='analitico' &&
+    cognitive.domains.some(domain=>['negocios','engenharia','matematica','planejamento'].includes(domain));
+  const id = env.MODEL ?? (complex || contextualComplex ? advanced : economical);
   return Object.hasOwn(models, id) ? {id, ...models[id]} : null;
 }
 
@@ -158,7 +164,7 @@ async function chat(request, env, now, day, month) {
         route:'local',modelLabel:'Calculadora',responseSource:'tool'});
     } catch {return error('A expressão de porcentagem não pôde ser validada.',400);}
   }
-  const messages = [{role: 'system', content: identity(model)}, {role: 'user', content: data.prompt}];
+  const messages = [{role: 'system', content: identity(model, data.prompt)}, {role: 'user', content: data.prompt}];
   const reserve = reservedNeurons(model, messages);
   const sealed = await seal(data.prompt, env.RECOVERY_KEY, 'prompt:' + data.id);
   const inserted = await env.DB.prepare(claim)
@@ -205,7 +211,7 @@ async function consume(env, body) {
       let timer;
       try {
         const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('deadline')), 180_000); });
-        const messages = [{role: 'system', content: identity(model)}, {role: 'user', content: prompt}];
+        const messages = [{role: 'system', content: identity(model, prompt)}, {role: 'user', content: prompt}];
         const math = /^(?:calcule|calculadora:)\s/i.test(prompt.split('\n\nMensagem atual:\n').at(-1).trim());
         result = await Promise.race([env.AI.run(model.id, {messages, max_tokens: model.maxTokens, temperature: 0.6, stream: false,
           ...(math ? {tools:[calculatorTool]} : {})}), deadline]);
