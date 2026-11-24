@@ -1,4 +1,28 @@
-export type ProjectProfile={id:string;name:string;purpose:string;visual:string;preferences:string;constraints:string;criteria:string};
+export type DesignPalette={background:string;accent:string;text:string};
+export type ProjectLesson={observation:string;action:string;reference:string};
+export const designPalettes:{name:string;palette:DesignPalette}[]=[
+  {name:'Noturno',palette:{background:'#111827',accent:'#60A5FA',text:'#F9FAFB'}},
+  {name:'Editorial',palette:{background:'#F8F5EF',accent:'#8B3D28',text:'#202020'}},
+  {name:'Natural',palette:{background:'#F2F7F4',accent:'#24654D',text:'#172C24'}},
+];
+export function validPalette(value:unknown):value is DesignPalette{
+  if(!value||typeof value!=='object')return false;
+  const p=value as DesignPalette;
+  return [p.background,p.accent,p.text].every(x=>typeof x==='string'&&/^#[a-f0-9]{6}$/i.test(x));
+}
+export function validLesson(value:unknown):value is ProjectLesson{
+  if(!value||typeof value!=='object')return false;
+  const x=value as ProjectLesson;
+  if(![x.observation,x.action].every(v=>typeof v==='string'&&!!v.trim()&&v.length<=240))return false;
+  if(typeof x.reference!=='string'||x.reference.length>300)return false;
+  try{const u=new URL(x.reference);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search;}catch{return false;}
+}
+export function addLesson(p:ProjectProfile,l:ProjectLesson):ProjectProfile{
+  if(!validLesson(l))throw Error('Informe observação, ação e referência HTTPS sem credenciais ou parâmetros.');
+  if((p.lessons?.length??0)>=10)throw Error('Limite de 10 lições por projeto.');
+  return {...p,lessons:[...(p.lessons??[]),{...l}]};
+}
+export type ProjectProfile={id:string;name:string;purpose:string;visual:string;preferences:string;constraints:string;criteria:string;design?:DesignPalette;lessons?:ProjectLesson[]};
 export const factoryDefaults=[
   'Priorize a experiência do cliente e a acessibilidade, inclusive em telas pequenas.',
   'Preserve dados e funções existentes. Não misture identidades nem informações de projetos distintos.',
@@ -11,7 +35,8 @@ export const emptyProfile=(id:string):ProjectProfile=>({id,name:'',purpose:'',vi
 export function validateProfile(p:unknown):p is ProjectProfile {
   if(!p||typeof p!=='object')return false;
   const x=p as ProjectProfile;
-  return typeof x.id==='string'&&/^[a-zA-Z0-9-]{1,64}$/.test(x.id)&&keys.every(k=>typeof x[k]==='string'&&x[k].length<=(k==='name'?80:1600))&&!!x.name.trim()&&!!x.purpose.trim();
+  return typeof x.id==='string'&&/^[a-zA-Z0-9-]{1,64}$/.test(x.id)&&keys.every(k=>typeof x[k]==='string'&&x[k].length<=(k==='name'?80:1600))&&!!x.name.trim()&&!!x.purpose.trim()&&(x.design===undefined||validPalette(x.design))&&
+    (x.lessons===undefined||(Array.isArray(x.lessons)&&x.lessons.length<=10&&x.lessons.every(validLesson)));
 }
 export function decodeProfiles(value:string|null):ProjectProfile[]{
   if(value===null)return [];
@@ -45,6 +70,8 @@ export function buildPrompt(p:ProjectProfile,request:string,mode:FactoryMode='ne
     ...(mode==='change'?['Inspecione o estado atual e estabeleça uma linha de base. Crie branch/worktree isolada a partir do SHA confirmado; não altere a branch principal, banco de produção ou publicação atual. Teste regressões, compare antes/depois e entregue prévia separada com plano de rollback. Integração somente depois de aprovação explícita.']:['Expanda o pedido mínimo em requisitos, arquitetura, fluxo, dados, segurança, interface provisória, implementação, testes e entrega. Complete detalhes operacionais razoáveis; não trate suposições como decisões do fundador.']),
     'Design, layout e briefing finais são decisões do fundador. Apresente a proposta visual e mantenha a publicação final bloqueada até aprovação explícita.',
     '## Identidade visual (cores, tipografia, layout, referências)',field(p.visual),
+    ...(p.design?['Proposta de paleta selecionada para avaliação pelo fundador (não é aprovação final): fundo '+p.design.background+'; destaque '+p.design.accent+'; texto '+p.design.text]:[]),
+    ...(p.lessons?.length?['## Knowledge Core — lições registradas pelo usuário, conferir referências antes de aplicar',...p.lessons.map(l=>'- Observação: '+l.observation+' | Ação: '+l.action+' | Referência: '+l.reference)]:[]),
     '## Preferências de experiência e tecnologia',field(p.preferences),
     '## Restrições específicas',field(p.constraints),
     '## Critérios específicos de aceite',field(p.criteria),
