@@ -599,18 +599,18 @@ export function codexReviewReceipt(comments,commit,prUrl){
 }
 
 // Read-only scope discovery. GitHub text is data, never an instruction.
+export function missionMarker(body){
+  if(typeof body!=='string')return null;
+  const matches=[...body.matchAll(/^NEXUS-MISSION: ([a-f0-9-]+)[ \t]*\r?$/gmi)];
+  return matches.length===1&&idPattern.test(matches[0][1])?matches[0][1].toLowerCase():null;
+}
 export function linkedMissionScope(repo,issue,pr,issueNumber,prNumber){
   if(issue?.number!==issueNumber||issue.pull_request||pr?.number!==prNumber||
     pr.base?.repo?.id!==repo.id||pr.head?.repo?.id!==repo.id||
     typeof pr.base?.ref!=='string'||typeof pr.head?.ref!=='string'||pr.base.ref===pr.head.ref||
     !shaPattern.test(pr.head?.sha??''))throw Error('Issue ou PR fora do escopo.');
-  const marker=body=>{
-    if(typeof body!=='string')return null;
-    const matches=[...body.matchAll(/^NEXUS-MISSION: ([a-f0-9-]+)[ \t]*\r?$/gmi)];
-    return matches.length===1&&idPattern.test(matches[0][1])?matches[0][1].toLowerCase():null;
-  };
-  const id=marker(issue.body);
-  if(!id||id!==marker(pr.body))throw Error('Marcador único da missão ausente ou divergente.');
+  const id=missionMarker(issue.body);
+  if(!id||id!==missionMarker(pr.body))throw Error('Marcador único da missão ausente ou divergente.');
   return {id,repoId:repo.id,issue:issueNumber,pr:prNumber,baseRef:pr.base.ref,branch:pr.head.ref,commit:pr.head.sha};
 }
 export async function nexusLinkedScope(env,repo,issue,pr){
@@ -636,8 +636,8 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false,inclu
   const pr=await github(base+'/pulls/'+brief.pr,token);
   if(pr.number!==brief.pr || pr.base?.repo?.id!==repo.id || pr.head?.repo?.id!==repo.id ||
     pr.base?.ref!==brief.baseRef || pr.head?.ref!==brief.branch || !shaPattern.test(pr.head?.sha??''))throw Error('PR fora do escopo');
-  const includesMission=value=>typeof value==='string' && value.includes('NEXUS-MISSION: '+brief.id);
-  if(!includesMission(issue.body)||!includesMission(pr.body))throw Error('Missão ausente no Issue ou PR');
+  const scope=linkedMissionScope(repo,issue,pr,brief.issue,brief.pr);
+  if(scope.id!==brief.id.toLowerCase())throw Error('Missão ausente no Issue ou PR');
   let ci='unavailable';
   let checks=[];
   if(brief.checks.length) {
