@@ -17,7 +17,7 @@ const eventLabels:Record<string,string>={spec_ready:'Planejamento confirmado',st
 const axisLabel=(axis:string)=>axes.find(([id])=>id===axis)?.[1]??({release:'Aprovação final',criteria:'Critérios de aceite',ci:'Testes'} as Record<string,string>)[axis]??axis;
 const dimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
 
-export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promise<Response>}) {
+export function NexusPanel({request,onNavigate}:{request:(path:string,data?:unknown)=>Promise<Response>;onNavigate?:()=>void}) {
   const [missions,setMissions]=useState<Mission[]>();
   const [detail,setDetail]=useState<Detail>();
   const [selectedId,setSelectedId]=useState<string>();
@@ -74,10 +74,12 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
     if(flight.current)return;
     setSelectedId(id);setDetail(undefined);setIncomplete(false);setConfirmed(false);setForm(undefined);
     setAdvanced(false);setShowReport(false);setShowHistory(false);setPayload('');
+    onNavigate?.();
     void run(()=>open(id));
   }
   function back(){
     setSelectedId(undefined);setDetail(undefined);setIncomplete(false);setConfirmed(false);setNotice('');setForm(undefined);
+    onNavigate?.();
   }
   function button(label:string,onPress:()=>void) {
     return <Pressable key={label} accessibilityRole="button" disabled={busy} style={s.button} onPress={onPress}><Text style={s.link}>{label}</Text></Pressable>;
@@ -132,7 +134,7 @@ export function NexusPanel({request}:{request:(path:string,data?:unknown)=>Promi
         <TextInput accessibilityLabel="Brief JSON da missão" multiline value={brief} onChangeText={setBrief} autoCapitalize="none" style={s.input}/>
         {button('Importar brief',()=>void run(async()=>{
           const result=await api('/nexus/missions',JSON.parse(brief));
-          setBrief('');setImporting(false);setSelectedId(result.mission.id);setDetail(undefined);setIncomplete(false);
+          setBrief('');setImporting(false);onNavigate?.();setSelectedId(result.mission.id);setDetail(undefined);setIncomplete(false);
           await loadList();await open(result.mission.id);
         }))}
       </>}
