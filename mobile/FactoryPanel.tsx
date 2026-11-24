@@ -32,6 +32,12 @@ export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySess
     })();
     return()=>{active=false;};
   },[db]);
+  const atCapacity=()=>new Set([...list.map(p=>p.id),...Object.keys(session.drafts)]).size>=30;
+  const creationBlocked=!profile&&atCapacity();
+  function newDraft(){
+    if(atCapacity()){setNotice('Limite de 30 projetos. Selecione um projeto existente.');return undefined;}
+    return emptyProfile(randomUUID());
+  }
   function remember(next:ProjectProfile,ask:string,kind:FactoryMode){
     session.selected=next.id;session.drafts[next.id]={profile:{...next},request:ask,mode:kind};
   }
@@ -57,7 +63,8 @@ export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySess
   async function generate(){
     if(!ready||lock.current)return;
     try{
-      const current=profile??emptyProfile(randomUUID());
+      const current=profile??newDraft();
+      if(!current)return;
       const prepared=quickProfile(current,request,mode);
       edit(prepared);setPrompt(buildPrompt(prepared,request,mode));
       setNotice('Briefing provisório preparado. Confira antes de compartilhar.');
@@ -78,12 +85,13 @@ export function FactoryPanel({db,session}:{db:SQLiteDatabase;session:FactorySess
       {action(projectsOpen?'Ocultar projetos':'Trocar projeto',()=>setProjectsOpen(!projectsOpen),busy)}
       {projectsOpen&&<>
         <View style={s.row}>{[...list,...Object.values(session.drafts).map(d=>d.profile).filter(d=>!list.some(p=>p.id===d.id))].map(item=><View key={item.id}>{action(item.name||'Novo projeto (rascunho)',()=>{select(item);if(mode==='change'){const d=session.drafts[item.id];remember(d.profile,d.request,'change');setMode('change');}setProjectsOpen(false);},busy)}</View>)}</View>
-        {action('Novo projeto em branco',()=>{select(emptyProfile(randomUUID()));setMode('new');setProjectsOpen(false);},busy||new Set([...list.map(p=>p.id),...Object.keys(session.drafts)]).size>=30)}
+        {action('Novo projeto em branco',()=>{const draft=newDraft();if(draft){select(draft);setMode('new');setProjectsOpen(false);}},busy||atCapacity())}
       </>}
+      {creationBlocked&&<Text accessibilityRole="alert" style={s.muted}>Limite de 30 projetos. Selecione um projeto existente para continuar.</Text>}
       <Text style={s.title}>O que você quer criar ou melhorar?</Text>
-      <TextInput accessibilityLabel="Pedido atual" placeholder="Ex.: Quero um sistema de agendamento para meus clientes." placeholderTextColor={palette.muted} value={request} editable={!busy} multiline maxLength={2000} style={[s.input,{minHeight:92}]}
-        onChangeText={value=>{if(profile)edit(profile,value);else {const draft=emptyProfile(randomUUID());edit(draft,value,mode);}}}/>
-      <Pressable accessibilityRole="button" accessibilityState={{disabled:busy||!request.trim()}} disabled={busy||!request.trim()} style={[s.primary,(busy||!request.trim())&&{opacity:.5}]} onPress={()=>void generate()}><Text style={s.primaryText}>Preparar briefing</Text></Pressable>
+      <TextInput accessibilityLabel="Pedido atual" placeholder="Ex.: Quero um sistema de agendamento para meus clientes." placeholderTextColor={palette.muted} value={request} editable={!busy&&!creationBlocked} multiline maxLength={2000} style={[s.input,{minHeight:92}]}
+        onChangeText={value=>{if(profile)edit(profile,value);else {const draft=newDraft();if(draft)edit(draft,value,mode);}}}/>
+      <Pressable accessibilityRole="button" accessibilityState={{disabled:busy||creationBlocked||!request.trim()}} disabled={busy||creationBlocked||!request.trim()} style={[s.primary,(busy||creationBlocked||!request.trim())&&{opacity:.5}]} onPress={()=>void generate()}><Text style={s.primaryText}>Preparar briefing</Text></Pressable>
       <Text style={s.muted}>Você aprova o design e a entrega. Esta etapa prepara o pedido; não inicia a execução das IAs.</Text>
       {prompt!==''&&<>
         <Text style={s.title}>Briefing pronto para revisão</Text>
