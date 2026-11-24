@@ -25,6 +25,7 @@ export function validBrief(b) {
     Array.isArray(b.criteria)&&b.criteria.length>0&&b.criteria.length<=15&&
     new Set(b.criteria.map(c=>c?.id)).size===b.criteria.length&&
     b.criteria.every(c=>c&&/^[a-z\d][a-z\d_-]{0,31}$/.test(c.id)&&!['constructor','prototype'].includes(c.id)&&publicText(c.description,300)&&publicText(c.expectedEvidence,300))&&
+    (b.projectBrief===undefined||publicText(b.projectBrief,12000))&&
     (b.executor===undefined||executionModes.includes(b.executor))&&
     (b.maxIterations===undefined||(number(b.maxIterations)&&b.maxIterations<=5));
 }
@@ -151,14 +152,15 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
   const installation=env.GITHUB_INSTALLATION_ID;
   if(!installation)return fail('NEXUS requer um repositório da instalação GitHub autorizada.',503);
   if(path==='/nexus/prepare'&&method==='POST'){
-    const draft=await read(14_000);
+    const draft=await read(32_000);
     if(!draft||!number(draft.repoId)||!number(draft.issue)||!number(draft.pr))return fail('Selecione repositório, Issue e PR válidos.');
     const repo=await visibleRepo(env,draft.repoId,installation);
     if(!repo||repo.state!=='active')return fail('Repositório indisponível.',403);
     // Validate user-supplied brief fields before doing any remote work.
     const provisional={schema:1,id:'00000000-0000-4000-8000-000000000001',repoId:repo.id,issue:draft.issue,pr:draft.pr,
       baseRef:'base-preview',branch:'work-preview',objective:draft.objective,constraints:draft.constraints??[],
-      nonGoals:draft.nonGoals??[],checks:draft.checks,criteria:draft.criteria,maxIterations:3,executor:'web'};
+      nonGoals:draft.nonGoals??[],checks:draft.checks,criteria:draft.criteria,maxIterations:3,executor:'web',
+      ...(draft.projectBrief===undefined?{}:{projectBrief:draft.projectBrief})};
     if(!validBrief(provisional))return fail('Informe objetivo, checks obrigatórios e critérios de aceite.');
     try{
       const {commit,...scope}=await nexusLinkedScope(env,repo,draft.issue,draft.pr);
@@ -179,8 +181,11 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
     return reply({missions:rows.map(row=>JSON.parse(row.record))});
   }
   if(!id && method==='POST'){
-    const draft=await read(14_000);
+    const draft=await read(32_000);
     if(!validBrief(draft))return fail('Brief inválido.');
+    if(draft.adoptExisting!==undefined&&typeof draft.adoptExisting!=='boolean')return fail('Modo de criação inválido.');
+    if(draft.adoptExisting===true&&(!draft.pr||typeof draft.expectedCommit!=='string'||! /^[a-f0-9]{40}$/.test(draft.expectedCommit)))
+      return fail('Para conferir uma entrega existente, confirme o SHA e o PR.');
     const repo=await visibleRepo(env,draft.repoId,installation);
     if(!repo||repo.state!=='active')return fail('Repositório indisponível.',403);
     if(draft.pr!=null&&draft.expectedCommit!==undefined){
@@ -197,12 +202,32 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
     if(claimed)return fail('Esta branch já possui uma missão.',409);
     const brief={schema:1,id:draft.id,repoId:draft.repoId,issue:draft.issue,pr:draft.pr??null,baseRef:draft.baseRef,branch:draft.branch,
       objective:draft.objective,nonGoals:draft.nonGoals,constraints:draft.constraints,checks:draft.checks,
-      criteria:draft.criteria.map(({id,description,expectedEvidence})=>({id,description,expectedEvidence})),maxIterations:draft.maxIterations??3,executor:draft.executor??'web'};
-    const mission={id:brief.id,brief,repository:repo.name,status:'IDEA',createdAt:now,updatedAt:now,revision:null,iteration:0,
+      criteria:draft.criteria.map(({id,description,expectedEvidence})=>({id,description,expectedEvidence})),maxIterations:draft.maxIterations??3,executor:draft.executor??'web',
+      ...(draft.projectBrief===undefined?{}:{projectBrief:draft.projectBrief})};
+    let mission={id:brief.id,brief,repository:repo.name,status:'IDEA',createdAt:now,updatedAt:now,revision:null,iteration:0,
       budget:{aiCalls:0,paid:false},reviewer:'IA Pessoal',evidence:{},criteria:{},findings:[],ownerApproval:null};
-    const added=await env.DB.prepare('INSERT OR IGNORE INTO nexus_missions_v1 VALUES(?,?,?,0,?) RETURNING id')
-      .bind(mission.id,repo.id,installation,JSON.stringify(mission)).first();
-    return added?reply({mission,version:0},201):fail('Missão já existe.',409);
+    if(draft.adoptExisting===true){
+      // Observation of an existing PR is not evidence that an agent implemented it.
+      let remote;
+      try {remote=await nexusGitHubEvidence(env,repo,brief,true,false);}
+      catch{return fail('Não foi possível conferir a entrega. Nenhuma missão foi criada.',409);}
+      if(remote.commit!==draft.expectedCommit)return fail('O commit mudou. Prepare a missão novamente.',409);
+      delete remote.samples;
+      mission={...mission,revision:remote.commit,remote,iteration:1,lastSyncAt:now,
+        status:remote.ci==='pending'?'CI_PENDING':'AI_AUDIT',
+        intake:{kind:'existing_delivery',commit:remote.commit,at:now,actor:'owner'}};
+      if(mission.status==='AI_AUDIT')mission=transition(mission,{type:'audit'},remote,now);
+    }
+    // Recheck access and uniqueness at the write, after the remote reads.
+    const added=await env.DB.prepare(`INSERT OR IGNORE INTO nexus_missions_v1
+      SELECT ?,?,?,0,? WHERE EXISTS(SELECT 1 FROM github_repos_v15 p JOIN github_inventory_v15 i ON p.id=i.repo
+        JOIN github_account_v15 a ON a.installation=i.installation WHERE p.id=? AND i.installation=?
+        AND p.state='active' AND i.availability='available' AND a.state!='disconnected')
+      AND NOT EXISTS(SELECT 1 FROM nexus_missions_v1 WHERE installation=? AND repo=?
+        AND json_extract(record,'$.brief.branch')=? AND json_extract(record,'$.status') NOT IN ('CANCELLED','FAILED','RELEASED'))
+      RETURNING id`)
+      .bind(mission.id,repo.id,installation,JSON.stringify(mission),repo.id,installation,installation,repo.id,draft.branch).first();
+    return added?reply({mission,version:0},201):fail('Missão já existe ou repositório indisponível.',409);
   }
   if(!idPattern.test(id??''))return fail('Identificador inválido.');
   const row=await env.DB.prepare('SELECT * FROM nexus_missions_v1 WHERE id=? AND installation=?').bind(id,installation).first();
