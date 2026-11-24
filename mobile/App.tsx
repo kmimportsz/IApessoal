@@ -954,11 +954,22 @@ function PersonalApp() {
       setNotice('Esta investigação já possui um acompanhamento ativo.');
       return;
     }
-    confirm('Criar acompanhamento?', 'Registrar uma revisão desta descoberta para daqui a 24 horas? O projeto será cadastrado no gateway autorizado. Nenhum código será alterado.',async()=>{
+    confirm('Autorizar acompanhamento e análise?', 'Criar uma revisão para daqui a 24 horas e autorizar uma análise automática deste objetivo, dentro da cota gratuita existente? Nenhum código será alterado.',async()=>{
+      const id=randomUUID();
       await change('/initiative/projects','POST',{
-        id:randomUUID(),title,pending,due:Date.now()+86_400_000,
+        id,title,pending,due:Date.now()+86_400_000,
       });
-      setNotice('Acompanhamento cadastrado. Consulte Projetos para gerenciar permissões e revisões.');
+      // A concessão é explícita e restrita ao objetivo recém-criado.
+      // Uma falha na segunda etapa não apaga o projeto nem inventa autorização.
+      try {
+        const response=await request('/automation/project',{id,enabled:true});
+        const data=await response.json();
+        if(!response.ok)throw Error(data.error??'Não foi possível autorizar a análise.');
+        await refreshAutomation();
+        setNotice('Acompanhamento criado e análise autorizada dentro da cota existente.');
+      }catch{
+        setNotice('Acompanhamento criado, mas a análise automática não foi autorizada. Confira em Projetos.');
+      }
       go('Projetos');
     });
   }
