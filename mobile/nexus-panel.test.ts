@@ -25,7 +25,7 @@ const mission={id:'example',repository:'owner/repo',status:'IDEA',revision:null,
 const other={...mission,id:'other',repository:'owner/other'};
 const details=(current,version)=>({mission:current,version,events:[],review:{gate:{blockers:[]}}});
 
-async function mount(t,request){
+async function mount(t,request,onNavigate){
   const prior=globalThis.IS_REACT_ACT_ENVIRONMENT;
   let root;
   // Register cleanup before the first render, including exceptional paths.
@@ -34,7 +34,7 @@ async function mount(t,request){
     else globalThis.IS_REACT_ACT_ENVIRONMENT=prior;
   }});
   globalThis.IS_REACT_ACT_ENVIRONMENT=true;
-  await act(async()=>{root=create(createElement(NexusPanel,{request}));});
+  await act(async()=>{root=create(createElement(NexusPanel,{request,onNavigate}));});
   const buttons=()=>root.root.findAllByType('Pressable');
   const label=b=>b.props.accessibilityLabel??b.findAllByType('Text')[0]?.props.children;
   const has=text=>buttons().some(b=>label(b)===text);
@@ -119,4 +119,17 @@ test('POST confirmado com GET 500 não usa versão antiga nem libera ações obs
   assert.deepEqual(sent,[0,1]);
   await ui.press('Voltar às missões');
   assert.equal(ui.has('owner/repo · Em implementação'),true);
+});
+
+test('Navegação notifica o contêiner ao abrir missão do fim de uma lista e ao retornar',async t=>{
+  const entries=Array.from({length:30},(_,i)=>({...mission,id:'m'+i,repository:'owner/repo-'+i}));
+  let navigations=0;
+  const ui=await mount(t,async path=>path==='/nexus/missions'?Response.json({missions:entries}):
+    Response.json(details(entries[29],0)),()=>{navigations++;});
+  await ui.press('owner/repo-29 · Ideia recebida');
+  assert.equal(navigations,1);
+  assert.equal(ui.has('Voltar às missões'),true);
+  await ui.press('Voltar às missões');
+  assert.equal(navigations,2);
+  assert.equal(ui.has('owner/repo-29 · Ideia recebida'),true);
 });
