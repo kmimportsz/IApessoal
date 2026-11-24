@@ -84,3 +84,17 @@ export function buildPrompt(p:ProjectProfile,request:string,mode:FactoryMode='ne
     '## Entrega', 'Relatório curto por IA, benefício empresarial, resultados comprovados, limitações e rollback. Manter este briefing atualizado no repositório autorizado. Ações externas dependem da integração e autorização reais.',
   ].join('\n\n');
 }
+
+// Only fill missing fields on new projects. Existing identities remain unchanged.
+export function quickProfile(profile:ProjectProfile,request:string,mode:FactoryMode):ProjectProfile{
+  const ask=request.trim();
+  if(!ask||request.length>2000)throw Error('Descreva seu pedido em até 2.000 caracteres.');
+  if(mode==='change'){
+    if(!validateProfile(profile))throw Error('Selecione ou complete o perfil do projeto existente.');
+    return profile;
+  }
+  const result={...profile,name:profile.name.trim()||('Rascunho: '+ask.replace(/\s+/g,' ')).slice(0,80),
+    purpose:profile.purpose.trim()||('Objetivo provisório, a confirmar: '+ask).slice(0,1600)};
+  if(!validateProfile(result))throw Error('Confira o perfil do projeto.');
+  return result;
+}
