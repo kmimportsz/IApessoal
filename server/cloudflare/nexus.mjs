@@ -99,7 +99,9 @@ export function transition(m,event,remote,now) {
       throw Error('A revisão solicitada exige um novo commit.');
     if(remote.commit!==m.revision){next.evidence={};next.criteria={};next.findings=[];next.ownerApproval=null;next.director=null;}
     next.revision=remote.commit;next.remote=remote;
-    const changed=remote.commit!==m.revision||remote.ci!==m.remote?.ci;
+    const reviewState=record=>JSON.stringify([record?.codex?.state,record?.codex?.commit,record?.codex?.unresolved,record?.codex?.findings]);
+    const changed=remote.commit!==m.revision||remote.ci!==m.remote?.ci||reviewState(remote)!==reviewState(m.remote);
+    if(changed){next.director=null;next.ownerApproval=null;}
     if(changed||from('IMPLEMENTING'))next.status=remote.ci==='pending'?'CI_PENDING':'AI_AUDIT';
   }else if(type==='attest' && from('AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER') && m.revision &&
     payload.commit===m.revision && ['passed','failed'].includes(payload.status) && url(payload.url)&&
