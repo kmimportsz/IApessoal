@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {emptyProfile,saveProfile,decodeProfiles,buildPrompt,mergeProfiles} from './factory.ts';
+import {emptyProfile,saveProfile,decodeProfiles,buildPrompt,mergeProfiles,validPalette,addLesson,designPalettes} from './factory.ts';
 const a={...emptyProfile('a'),name:'Projeto A',purpose:'Atender clientes',visual:'Vermelho e branco',preferences:'Mobile first'};
 const b={...emptyProfile('b'),name:'Projeto B',purpose:'Agendar serviços',visual:'Verde e preto',preferences:'Fluxo acessível'};
 test('Perfis separados e edição preserva outro projeto',()=>{
@@ -37,4 +37,16 @@ test('Backup preserva perfis distintos e não sobrescreve perfil existente',()=>
   const local={...a,visual:'Atualizado localmente'};
   assert.deepEqual(mergeProfiles([local],restored),[local,b]);
   assert.deepEqual(mergeProfiles([],restored),[a,b]);
+});
+
+test('Studio registra paleta provisória e Knowledge mantém lições isoladas e restauráveis',()=>{
+ const palette=designPalettes[0].palette;
+ const lesson={observation:'Teste anterior falhou',action:'Testar cadastro novamente',reference:'https://github.com/owner/repo/pull/1'};
+ const profile=addLesson({...a,design:palette},lesson);
+ assert.equal(validPalette(palette),true);assert.equal(validPalette({...palette,accent:'red'}),false);
+ assert.deepEqual(decodeProfiles(JSON.stringify([profile,b])),[profile,b]);
+ const prompt=buildPrompt(profile,'Criar tela');
+ assert.match(prompt,/não é aprovação final/);assert.match(prompt,/Testar cadastro novamente/);
+ assert.doesNotMatch(buildPrompt(b,'Criar tela'),/Testar cadastro novamente/);
+ assert.throws(()=>addLesson(a,{...lesson,reference:'https://user:pass@example.com/'}));
 });
