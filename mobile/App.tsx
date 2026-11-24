@@ -1,6 +1,6 @@
 import { NexusPanel } from './NexusPanel';
 import { FactoryPanel } from './FactoryPanel';
-import type {FactorySession} from './factory';
+import type {FactorySession,FactoryHandoff} from './factory';
 import { assessRequest, competencyChecks, contextualMemory, trustedResearchUrl } from './competence';
 import { prioritizeActions } from './autonomy';
 import { buildExcellenceReviewRequest, buildObjectiveExcellenceRequest, repositoryReadiness } from './excellence';
@@ -169,6 +169,7 @@ function PersonalApp() {
   const [backupKey,setBackupKey]=useState('');
   const [backupText,setBackupText]=useState('');
   const factorySession=useRef<FactorySession>({drafts:{}});
+  const [factoryLink,setFactoryLink]=useState<FactoryHandoff>();
   const [tab, setTab] = useState<Tab>('Conversa');
   const [notice, setNotice] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -1403,8 +1404,8 @@ function PersonalApp() {
       </>}
       {tab === 'Projetos' && <>
         <Text style={s.title}>Projetos</Text>
-        {settings.url===trackingGateway && <NexusPanel request={request} repos={github?.repos.filter(r=>r.state==='active'&&r.availability==='available').map(r=>({id:r.id,name:r.name}))} onNavigate={()=>panels.current?.scrollTo({y:0,animated:false})}/>}
-        {db && <FactoryPanel db={db} session={factorySession.current}/>}
+        {settings.url===trackingGateway && <NexusPanel request={request} handoff={factoryLink} onHandoffConsumed={()=>setFactoryLink(undefined)} repos={github?.repos.filter(r=>r.state==='active'&&r.availability==='available').map(r=>({id:r.id,name:r.name}))} onNavigate={()=>panels.current?.scrollTo({y:0,animated:false})}/>}
+        {db && <FactoryPanel db={db} session={factorySession.current} onLink={settings.url===trackingGateway&&settings.token?setFactoryLink:undefined}/>}
         {github && <View style={s.card}>
           <Text style={s.section}>Repositórios GitHub</Text>
           {!metrics && <View style={s.card}>
