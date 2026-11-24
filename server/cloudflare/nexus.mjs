@@ -36,6 +36,8 @@ function assessment(m,ownerApproved=false) {
       evidence:item.reason,evidenceUrl:item.url}];
   });
   const gate=evaluateQualityGate({revision:m.revision,checks,authorized:ownerApproved,findings:m.findings});
+  if(m.remote?.codex?.state==='completed'&&m.remote.codex.commit===m.revision&&m.remote.codex.unresolved===true)
+    gate.blockers.push({axis:'codex',reason:'O Codex registrou apontamentos não resolvidos neste commit. Confira a revisão.'});
   if(m.remote?.ci!=='passed')gate.blockers.push({axis:'ci',reason:'CI obrigatório sem confirmação de sucesso.'});
   if(m.brief.criteria.some(c=>!Object.hasOwn(m.criteria,c.id)||m.criteria[c.id].status!=='passed'))
     gate.blockers.push({axis:'criteria',reason:'Um ou mais critérios de aceite ainda aguardam evidências.'});
@@ -128,7 +130,7 @@ export function transition(m,event,remote,now) {
     next.status=m.iteration>=m.brief.maxIterations?'PAUSED':'CHANGES_REQUIRED';
     next.reason=next.status==='PAUSED'?'Limite de iterações atingido.':null;
   }else if(type==='approve' && from('READY_FOR_OWNER') && payload.commit===m.revision &&
-    remote?.commit===m.revision && remote.ci==='passed' && assessment(m,true).approved){
+    remote?.commit===m.revision && remote.ci==='passed' && assessment({...m,remote},true).approved){
     next.status='OWNER_APPROVED';next.ownerApproval={commit:m.revision,at:now,actor:'owner'};
   }else if(['pause','fail','cancel'].includes(type) && !from('RELEASED','CANCELLED','OWNER_APPROVED')&&publicText(payload.reason,400)){
     next.status={pause:'PAUSED',fail:'FAILED',cancel:'CANCELLED'}[type];next.reason=payload.reason;

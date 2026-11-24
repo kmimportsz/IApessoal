@@ -36,3 +36,17 @@ test('Limite de revisões pausa a missão e o brief rejeita chave de protótipo'
   assert.equal(validBrief({...brief,criteria:[{...brief.criteria[0],id:'__proto__'}]}),false);
   assert.equal(transition({...audit(),status:'CHANGES_REQUIRED',iteration:3},{type:'start'},null,1).status,'PAUSED');
 });
+
+test('Apontamento Codex atual impede aprovação mesmo com evidências humanas e CI verde',()=>{
+ const base=audit();
+ let mission=base;
+ const attest=(m,payload)=>transition(m,{type:'attest',payload:{commit:revision,status:'passed',url,reason:'Evidência revisada manualmente pelo proprietário.',...payload}},null,1);
+ for(const axis of ['objective','correctness','security','resilience','delivery'])mission=attest(mission,{axis});
+ mission=attest(mission,{criterion:'task'});
+ mission=attest(mission,{axis:'experience',dimensions,functionalUrl:url+'/actions',visualUrl:url+'/evidence'});
+ const ready=transition(mission,{type:'audit'},null,2);
+ assert.equal(ready.status,'READY_FOR_OWNER');
+ const unresolved={...remote,repo:'owner/repo',prUrl:url+'/pull/2',codex:{state:'completed',commit:revision,unresolved:true,findings:true,url:url+'/pull/2#issuecomment-1'}};
+ assert.equal(transition(ready,{type:'audit'},unresolved,3).status,'EVIDENCE_MISSING');
+ assert.throws(()=>transition(ready,{type:'approve',payload:{commit:revision}},unresolved,3));
+});
