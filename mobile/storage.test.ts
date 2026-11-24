@@ -53,3 +53,24 @@ test('A migração 1.1 preserva v1.0, recupera envio e registra metadados de rev
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM memory_history').get()?.count, 0);
   } finally { sqlite.close(); }
 });
+
+test('Permissão automática nova fica restrita à conversa e revogação bloqueia fila',async()=>{
+ const sqlite=new DatabaseSync(':memory:');
+ try{
+  const db={execAsync:async(sql:string)=>sqlite.exec(sql),getAllAsync:async(sql:string)=>sqlite.prepare(sql).all(),
+    withExclusiveTransactionAsync:async(action:(tx:unknown)=>Promise<void>)=>{await action(db);}};
+  await initialize(db as unknown as Parameters<typeof initialize>[0]);
+  sqlite.exec(`INSERT INTO memory VALUES ('m','Aprendizado','lição',0,1,1);
+    INSERT INTO conversations(id,title) VALUES ('p','Projeto A'),('q','Projeto B');
+    INSERT INTO memory_auto_scoped_grants VALUES ('m','p',1);
+    INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version,memory_auto,thread_id)
+    VALUES ('a','a','local','',1,'m',1,1,'p'),('b','b','local','',1,'m',1,1,'q'),('c','c','local','',1,'m',1,1,'p');`);
+  const claim=sqlite.prepare(claimJobSql);
+  assert.equal(claim.run('https://example.test','a').changes,1);
+  assert.equal(claim.run('https://example.test','b').changes,0);
+  sqlite.exec("UPDATE conversations SET archived=1 WHERE id='p'");
+  assert.equal(claim.run('https://example.test','c').changes,0);
+  sqlite.exec("DELETE FROM conversations WHERE id='p'");
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM memory_auto_scoped_grants').get()?.n,0);
+ }finally{sqlite.close();}
+});
