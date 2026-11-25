@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {transition,validBrief} from './nexus.mjs';
+import {codexReviewReceipt} from './github.mjs';
 
 const revision='1'.repeat(40);
 const dimensions=['navegação','clareza','design','responsividade','acessibilidade','tarefas principais'];
@@ -74,4 +75,17 @@ test('Segurança atual em andamento ou com apontamento impede aprovação',()=>{
   assert.equal(transition(ready,{type:'audit'},changed,3).status,'EVIDENCE_MISSING');
   assert.throws(()=>transition(ready,{type:'approve',payload:{commit:revision}},changed,3));
  }
+});
+
+test('Recibos de revisão de código não servem como recibos de segurança',()=>{
+ const current={commit_sha:revision,status:'completed',has_any_findings:false,has_unresolved_findings:false};
+ const security={...current,has_any_findings:true,has_unresolved_findings:true};
+ const comment={id:1,user:{id:199175422,login:'chatgpt-codex-connector[bot]',type:'Bot'},
+   performed_via_github_app:{id:1144995,slug:'chatgpt-codex-connector'},updated_at:'2026-11-24T00:00:00Z',
+   body:'<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 '+JSON.stringify({code_review:current,security_review:security})+' -->'};
+ assert.equal(codexReviewReceipt([comment],revision,url).unresolved,false);
+ assert.equal(codexReviewReceipt([comment],revision,url,'security_review').unresolved,true);
+ assert.equal(codexReviewReceipt([comment],'2'.repeat(40),url,'security_review').state,'stale');
+ assert.equal(codexReviewReceipt([{...comment,user:{...comment.user,id:2}}],revision,url,'security_review').state,'not_observed');
+ assert.equal(codexReviewReceipt([{...comment,body:comment.body.replace(JSON.stringify(security),'null')}],revision,url,'security_review').state,'not_observed');
 });
