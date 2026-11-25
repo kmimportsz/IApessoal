@@ -6,8 +6,9 @@ import {canReview,reviewCycle,nextAction,deliverySummary} from './nexus-operatio
 import type {FactoryHandoff} from './factory';
 
 type Mission={id:string;repository:string;status:string;revision:string|null;iteration:number;intake?:{kind:'existing_delivery';commit:string;at:number};brief:{projectBrief?:string;maxIterations:number;objective:string;baseRef:string;branch:string;constraints?:string[];nonGoals?:string[];criteria:{id:string;description:string;expectedEvidence?:string}[]}};
+type ReviewReceipt={state:string;commit?:string;url?:string;findings?:boolean;unresolved?:boolean};
 type Detail={mission:Mission;version:number;
-  execution?:{mode:'web'|'cli';issueUrl:string;prUrl:string|null;result:{commit:string;ci:string}|null;codex?:{state:string;commit?:string;url?:string;findings?:boolean;unresolved?:boolean}};events:{id:string;type:string;status:string;at:number;reason?:string}[];
+  execution?:{mode:'web'|'cli';issueUrl:string;prUrl:string|null;result:{commit:string;ci:string}|null;codex?:ReviewReceipt;codexSecurity?:ReviewReceipt};events:{id:string;type:string;status:string;at:number;reason?:string}[];
   review:{gate:{blockers:{axis:string;reason:string}[]};status:string;correctionPackage?:{requests:{location:string;why:string;expected:string;test:string;url:string}[]};
     director?:{commit:string;verified:{text:string;url:string}[];hypotheses:{text:string}[];limits:string[];
       requests:{location:string;why:string;test:string}[];model?:{state:string;neurons?:number;observations?:{path:string;line:number;problem:string;verification:string}[]}}}};
@@ -248,6 +249,8 @@ export function NexusPanel({request,onNavigate,repos=[],handoff,onHandoffConsume
         <Text style={s.muted}>1. Planejamento · {detail.mission.intake?'Entrega existente vinculada':detail.events.some(item=>item.type==='spec_ready')?'Especificação registrada':'Planejamento não confirmado'}</Text>
         <Text style={s.muted}>2. Codex · {detail.execution?.codex?.state==='completed'&&detail.execution.codex.commit===detail.mission.revision?(detail.execution.codex.unresolved?'Revisão concluída, apontamentos pendentes':'Revisão concluída'):detail.execution?.codex?.state==='running'&&detail.execution.codex.commit===detail.mission.revision?'Revisão em andamento':detail.execution?.result?'PR observado; revisão não confirmada':'Execução ainda não confirmada'}</Text>
         {detail.execution?.codex?.url&&detail.execution.codex.commit===detail.mission.revision&&evidenceLink({text:'Ver revisão do Codex',url:detail.execution.codex.url})}
+        <Text style={s.muted}>Segurança · {detail.execution?.codexSecurity?.commit===detail.mission.revision&&detail.execution?.codexSecurity?.state==='completed'?(detail.execution.codexSecurity.unresolved?'Apontamentos pendentes':'Revisão independente concluída'):detail.execution?.codexSecurity?.commit===detail.mission.revision&&detail.execution?.codexSecurity?.state==='running'?'Revisão em andamento':'Revisão independente não confirmada'}</Text>
+        {detail.execution?.codexSecurity?.url&&detail.execution.codexSecurity.commit===detail.mission.revision&&evidenceLink({text:'Ver revisão de segurança',url:detail.execution.codexSecurity.url})}
         <Text style={s.muted}>3. Diretora · {detail.review.director?'Relatório disponível':'Revisão pendente'}</Text>
         <Text style={s.muted}>4. Você · {state==='OWNER_APPROVED'||state==='RELEASED'?'Aprovação registrada':'Aprovação pendente'}</Text>
         <Text style={s.muted}>Ciclo {detail.mission.iteration} de {detail.mission.brief.maxIterations}</Text>

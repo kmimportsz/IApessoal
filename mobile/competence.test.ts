@@ -24,3 +24,13 @@ test('Memória automática se abstém de decisões antigas, conflito e tema gen�
   assert.equal(contextualMemory('Catálogo Aurora',[{...memory,private:1}],now),undefined);
   assert.equal(contextualMemory('app',[memory],now),undefined);
 });
+
+test('Memória evita conflito entre projeto e decisão e não usa metadados inválidos',()=>{
+  const now=1_800_000_000_000;
+  const base:Memory={id:'1',kind:'Projeto',body:'Catálogo Aurora usa SQLite',updated:now,private:0,version:1};
+  const decision:Memory={...base,id:'2',kind:'Decisão',body:'Catálogo Aurora usa PostgreSQL'};
+  assert.equal(contextualMemory('Catálogo Aurora',[base,decision],now),undefined);
+  assert.equal(contextualMemory('Catálogo Aurora',[base,{...decision,private:1}],now)?.id,'1');
+  assert.equal(contextualMemory('Catálogo Aurora',[{...base,updated:now+1}],now),undefined);
+  assert.equal(contextualMemory('Catálogo Aurora',[{...base,version:0}],now),undefined);
+});

@@ -633,3 +633,24 @@ test('NEXUS: issue e PR vinculados ao SHA, revisão de UX bloqueante e reavalia�
   db.prepare("UPDATE github_inventory_v15 SET availability='removed' WHERE repo=12").run();
   assert.equal((await call(path)).status,404);
 });
+
+test('Laboratório percorre gateway autenticado, fila e recibo com provedor simulado sem chamadas extras',async t=>{
+ const {env,call,queued,consume,count}=setup(t);
+ const {benchmarkRequest,benchmarkReceipt,verifySandbox}=await import('./benchmark-runner.mjs');
+ env.PREVIEW_ISOLATED='true';
+ env.PREVIEW_VALIDATION_UNTIL=String(Date.now()+60_000);
+ const status=await(await call('/status')).json();
+ verifySandbox(status);
+ const id=crypto.randomUUID(),body=benchmarkRequest('correction',id);
+ assert.equal((await call('/chat',body,'z'.repeat(43))).status,401);
+ assert.equal((await call('/chat',body)).status,202);
+ assert.equal((await call('/chat',body)).status,202);
+ assert.equal(queued.length,1);
+ await consume();
+ const result=benchmarkReceipt(await(await call('/requests/'+id)).json(),id);
+ assert.equal(result.complete,true);
+ assert.equal(result.model,'@cf/openai/gpt-oss-120b');
+ assert.equal(result.reply,'Resposta de teste');
+ assert.equal(count(),1);
+ assert.equal((await call('/requests/'+id,undefined,'z'.repeat(43))).status,401);
+});

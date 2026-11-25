@@ -573,7 +573,8 @@ export async function collectCodexComments(readPage,maxPages=5){
   }
   return null;
 }
-export function codexReviewReceipt(comments,commit,prUrl){
+export function codexReviewReceipt(comments,commit,prUrl,kind='code_review'){
+  if(!['code_review','security_review'].includes(kind))return {state:'unavailable'};
   if(!Array.isArray(comments))return {state:'unavailable'};
   const trusted=comments.filter(c=>c?.user?.id===199175422&&c.user.login==='chatgpt-codex-connector[bot]'&&c.user.type==='Bot'&&
     c.performed_via_github_app?.id===1144995&&c.performed_via_github_app.slug==='chatgpt-codex-connector'&&
@@ -584,7 +585,7 @@ export function codexReviewReceipt(comments,commit,prUrl){
   const match=/<!-- codex-review-state:v1 (\{[^\r\n]{1,4096}\}) -->/.exec(comment.body);
   if(!match)return {state:'unavailable'};
   let review;
-  try{review=JSON.parse(match[1]).code_review;}catch{return {state:'unavailable'};}
+  try{review=JSON.parse(match[1])[kind];}catch{return {state:'unavailable'};}
   if(!review||!shaPattern.test(review.commit_sha??''))return {state:'not_observed'};
   if(review.commit_sha!==commit)return {state:'stale'};
   if(!['running','completed'].includes(review.status))return {state:'unavailable'};
@@ -652,11 +653,12 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false,inclu
     }catch{ /* Existing installation might lack Checks: read. */ }
   }
   const prUrl='https://github.com/'+repo.name+'/pull/'+brief.pr;
-  let codex={state:'unavailable'};
+  let codex={state:'unavailable'},codexSecurity={state:'unavailable'};
   try{
     const comments=await collectCodexComments(page=>github(base+'/issues/'+brief.pr+'/comments?per_page=50&page='+page,token,undefined,262_144));
     // Never store arbitrary comment content. The only retained fields are typed metadata and a GitHub reference.
     codex=codexReviewReceipt(comments,pr.head.sha,prUrl);
+    codexSecurity=codexReviewReceipt(comments,pr.head.sha,prUrl,'security_review');
   }catch{ /* A missing permission or format never implies a completed review. */ }
   const files=[];
   const samples=[];
@@ -693,7 +695,7 @@ export async function nexusGitHubEvidence(env,repo,brief,investigate=false,inclu
         throw Error('O commit do PR mudou durante a auditoria');
     }
   }
-  return {repo:repo.name,commit:pr.head.sha,ci,checks,codex,files,filesAvailable,filesComplete,samples,issue:brief.issue,pr:brief.pr,
+  return {repo:repo.name,commit:pr.head.sha,ci,checks,codex,codexSecurity,files,filesAvailable,filesComplete,samples,issue:brief.issue,pr:brief.pr,
     issueUrl:'https://github.com/'+repo.name+'/issues/'+brief.issue,
     prUrl:'https://github.com/'+repo.name+'/pull/'+brief.pr};
 }

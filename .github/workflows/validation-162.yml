@@ -10,6 +10,7 @@ on:
       - feature/nexus-factory
       - feature/nexus-operations
       - feature/nexus-intake
+      - release/ipe-integrada
   workflow_dispatch:
 
 permissions:
@@ -55,3 +56,36 @@ jobs:
         run: npm run check
       - name: Executar testes deterministas
         run: npm test
+  packaging:
+    name: Empacotamento Expo iOS e Android
+    if: github.base_ref == 'release/ipe-integrada' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Instalar dependencias sem alterar lockfile
+        run: npm ci --ignore-scripts
+      - name: Exportar bundles Expo sem assinar ou publicar
+        env:
+          CI: '1'
+          EXPO_NO_TELEMETRY: '1'
+        run: npx --no-install expo export --platform ios --platform android --output-dir dist-release-check
+      - name: Conferir arquivos realmente gerados
+        env:
+          IPE_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node ../scripts/check-expo-export.mjs dist-release-check
+      - name: Preservar exportacao conferida sem deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipe-expo-export-${{ github.event.pull_request.head.sha || github.sha }}
+          path: mobile/dist-release-check/
+          if-no-files-found: error
+          retention-days: 3

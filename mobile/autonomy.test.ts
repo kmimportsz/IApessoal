@@ -42,3 +42,10 @@ test('duplicatas preservam a evidência de maior criticidade',()=>{
   const input=[finding('media','média'),finding('critica','crítica')];
   assert.deepEqual(prioritizeActions(input,[],t).map(x=>x.id),['critica']);
 });
+
+test('iniciativa agrupa ações equivalentes sem misturar projetos',()=>{
+  const base={run_id:'a',project_id:'p',created:t-100,state:'ready',summary:'Revisado',action:'Rever orçamento'};
+  const reviews=[base,{...base,run_id:'b',created:t,action:'  REVER ORCAMENTO '},
+    {...base,run_id:'c',project_id:'outro'}, {...base,run_id:'futuro',created:t+1}];
+  assert.deepEqual(prioritizeActions([],reviews,t,5).map(x=>x.id),['b','c']);
+});

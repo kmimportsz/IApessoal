@@ -36,15 +36,18 @@ export function trustedResearchUrl(url:string) {
 
 // The caller supplies only memories with active consent for their current revision.
 export function contextualMemory(prompt:string, memories:Memory[], now=Date.now()) {
-  const recent=memories.filter(item=>
-    !['Compromisso','Objetivo','Projeto','Decisão'].includes(item.kind) || now-item.updated<=180*86400000);
+  const timeSensitive=['Compromisso','Objetivo','Projeto','Decisão'];
+  const recent=memories.filter(item=>!item.private && Number.isSafeInteger(item.updated) &&
+    item.updated>=0 && item.updated<=now && Number.isSafeInteger(item.version) && item.version>=1 &&
+    (!timeSensitive.includes(item.kind) || now-item.updated<=180*86400000));
   const candidate=relevantMemory(prompt,recent);
   if(!candidate)return;
   const tokens=new Set(memoryKey(prompt).split(' ').filter(word=>word.length>=5));
   const hits=(body:string)=>new Set(memoryKey(body).split(' ').filter(word=>tokens.has(word))).size;
   const coverage=hits(candidate.body);
   if(coverage<2)return;
-  if(recent.some(other=>other.id!==candidate.id && !other.private && other.kind===candidate.kind &&
+  if(recent.some(other=>other.id!==candidate.id && (other.kind===candidate.kind ||
+    (timeSensitive.includes(other.kind) && timeSensitive.includes(candidate.kind))) &&
     memoryKey(other.body)!==memoryKey(candidate.body) && hits(other.body)>=coverage))return;
   return candidate;
 }

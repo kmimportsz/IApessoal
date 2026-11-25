@@ -39,6 +39,9 @@ function assessment(m,ownerApproved=false) {
   const gate=evaluateQualityGate({revision:m.revision,checks,authorized:ownerApproved,findings:m.findings});
   if(m.remote?.codex?.state==='completed'&&m.remote.codex.commit===m.revision&&m.remote.codex.unresolved===true)
     gate.blockers.push({axis:'codex',reason:'O Codex registrou apontamentos não resolvidos neste commit. Confira a revisão.'});
+  const security=m.remote?.codexSecurity;
+  if(security?.commit===m.revision&&(security.state==='running'||(security.state==='completed'&&security.unresolved===true)))
+    gate.blockers.push({axis:'security-review',reason:security.state==='running'?'A revisão de segurança do Codex ainda está em andamento.':'A revisão de segurança registrou apontamentos não resolvidos neste commit.'});
   if(m.remote?.ci!=='passed')gate.blockers.push({axis:'ci',reason:'CI obrigatório sem confirmação de sucesso.'});
   if(m.brief.criteria.some(c=>!Object.hasOwn(m.criteria,c.id)||m.criteria[c.id].status!=='passed'))
     gate.blockers.push({axis:'criteria',reason:'Um ou mais critérios de aceite ainda aguardam evidências.'});
@@ -55,6 +58,7 @@ export function directorReport(remote,now) {
       url:remote.prUrl+'/checks',
     })),
     ...(remote.codex?.state==='completed'?[{text:'Codex: revisão registrada neste commit'+(remote.codex.unresolved?' · apontamentos em aberto':remote.codex.findings?' · apontamentos registrados, sem pendências informadas':' · sem apontamentos informados')+'.',url:remote.codex.url}]:[]),
+    ...(remote.codexSecurity?.state==='completed'?[{text:'Codex: revisão de segurança registrada neste commit'+(remote.codexSecurity.unresolved?' · apontamentos em aberto':remote.codexSecurity.findings?' · apontamentos registrados, sem pendências informadas':' · sem apontamentos informados')+'.',url:remote.codexSecurity.url}]:[]),
     ...checked.map(file=>({text:file.path+' · '+file.lines+' linhas na amostra',
       url:'https://github.com/'+remote.repo+'/blob/'+remote.commit+'/'+file.path.split('/').map(encodeURIComponent).join('/')})),
   ];
@@ -79,6 +83,7 @@ export function directorReport(remote,now) {
     model:remote.modelReview??{state:'not_requested'},
     limits:[...(!remote.filesAvailable?['A lista de arquivos não estava disponível.']:
       !remote.filesComplete?['A lista de arquivos é parcial.']:[]),
+      ...(remote.codexSecurity?.state!=='completed'?['Revisão independente de segurança neste SHA ainda não confirmada.']:[]),
       'A inspeção é amostral e não executa código. A experiência real ainda exige prova funcional e visual.']};
 }
 
@@ -99,7 +104,9 @@ export function transition(m,event,remote,now) {
       throw Error('A revisão solicitada exige um novo commit.');
     if(remote.commit!==m.revision){next.evidence={};next.criteria={};next.findings=[];next.ownerApproval=null;next.director=null;}
     next.revision=remote.commit;next.remote=remote;
-    const changed=remote.commit!==m.revision||remote.ci!==m.remote?.ci;
+    const reviewState=record=>JSON.stringify([record?.codex,record?.codexSecurity].map(r=>[r?.state,r?.commit,r?.unresolved,r?.findings]));
+    const changed=remote.commit!==m.revision||remote.ci!==m.remote?.ci||reviewState(remote)!==reviewState(m.remote);
+    if(changed){next.director=null;next.ownerApproval=null;}
     if(changed||from('IMPLEMENTING'))next.status=remote.ci==='pending'?'CI_PENDING':'AI_AUDIT';
   }else if(type==='attest' && from('AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER') && m.revision &&
     payload.commit===m.revision && ['passed','failed'].includes(payload.status) && url(payload.url)&&
@@ -242,7 +249,7 @@ export async function nexusRoute({env,path,method,read,now,quota}) {
     return reply({mission:m,version:row.version,events,execution:{mode:executor,
       issueUrl:github+'/issues/'+m.brief.issue,prUrl:m.brief.pr?github+'/pull/'+m.brief.pr:null,
       result:m.remote?.commit?{commit:m.remote.commit,ci:m.remote.ci}:null,
-      ...(m.remote?.codex?{codex:m.remote.codex}:{})},
+      ...(m.remote?.codex?{codex:m.remote.codex}:{}),...(m.remote?.codexSecurity?{codexSecurity:m.remote.codexSecurity}:{})},
       review:{schema:1,missionId:id,commit:m.revision,
       repository:m.repository,status:m.status,gate:assessment(m,m.status==='OWNER_APPROVED'),requests:m.findings,criteria:m.criteria,evidence:m.evidence,
       issue:m.remote?.issueUrl,pr:m.remote?.prUrl,delivery:'manual',director:m.director??null,

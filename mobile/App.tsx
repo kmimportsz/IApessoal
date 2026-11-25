@@ -23,7 +23,7 @@ import * as Speech from 'expo-speech';
 import { randomUUID } from 'expo-crypto';
 import { requireOptionalNativeModule } from 'expo';
 import type { ExpoSpeechRecognitionModule as VoiceModule } from 'expo-speech-recognition';
-import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, preferenceCandidate, recentContext, relevantMemory, type Category, type Memory, type Route } from './core';
+import { categories, connectionState, eligible, endpoint, experiment, matches, memoryKey, messageForQueue, learningCandidate, recentContext, relevantMemory, type Category, type Memory, type Route } from './core';
 import { audit, initialize } from './storage';
 import { exportWorkspace, importWorkspace, readBackup } from './backup';
 import { claimJobSql } from './outbox';
@@ -149,7 +149,7 @@ function PersonalApp() {
   const [researchQuery,setResearchQuery]=useState('');
   const [research,setResearch]=useState<{searchedAt:string; dailyUsed:number; dailyLimit:number; providers?:{source:string;available:boolean}[]; results:{title:string;description:string;url:string;source?:string;date?:string}[]}>();
   const [researchMode,setResearchMode]=useState<'confirm'|'auto'|'off'>('confirm');
-  const [autoGrants,setAutoGrants]=useState<{id:string;version:number}[]>([]);
+  const [autoGrants,setAutoGrants]=useState<{id:string;version:number;thread_id:string|null}[]>([]);
   const [automation,setAutomation]=useState<Automation>();
   const [github,setGithub]=useState<GitHubStatus>();
   const [metrics,setMetrics]=useState<GitHubMetrics>();
@@ -177,7 +177,7 @@ function PersonalApp() {
   const [contextMemory, setContextMemory] = useState<Memory>();
   const [dismissedMemory, setDismissedMemory] = useState<string>();
   const [probeCount, setProbeCount] = useState(0);
-  const [preference, setPreference] = useState<string>();
+  const [learning, setLearning] = useState<ReturnType<typeof learningCandidate>>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [chatQuery, setChatQuery] = useState('');
   const [menu, setMenu] = useState(false);
@@ -245,7 +245,7 @@ function PersonalApp() {
       store.getAllAsync<{key: string; value: string}>('SELECT * FROM options'),
       store.getAllAsync<MemoryRevision>('SELECT * FROM memory_history ORDER BY changed DESC'),
       store.getAllAsync<Thread>('SELECT * FROM conversations ORDER BY archived,title'),
-      store.getAllAsync<{id:string;version:number}>('SELECT id,version FROM memory_auto_grants'),
+      store.getAllAsync<{id:string;version:number;thread_id:string|null}>('SELECT id,version,NULL AS thread_id FROM memory_auto_grants UNION ALL SELECT g.id,g.version,g.thread_id FROM memory_auto_scoped_grants g JOIN conversations c ON c.id=g.thread_id WHERE c.archived=0'),
     ]);
     const prefs = Object.fromEntries(options.map(item => [item.key, item.value]));
     setMemories(mem); setJobs(queue); setEntries(log); setResults(runs); setRevisions(history);
@@ -365,7 +365,7 @@ function PersonalApp() {
   const photoUri = avatarPhoto ? new File(Paths.document, avatarPhoto).uri : undefined;
   const autoMemory = useMemo(() => {
     if(context || !prompt.trim() || !autoGrants.length) return undefined;
-    const allowed = memories.filter(item=>!item.private && autoGrants.some(grant=>grant.id===item.id&&grant.version===item.version));
+    const allowed = memories.filter(item=>!item.private && autoGrants.some(grant=>grant.id===item.id&&grant.version===item.version&&(grant.thread_id===null||grant.thread_id===threadId)));
     const title=threadId==='principal'?'':threads.find(item=>item.id===threadId)?.title??'';
     const current=prompt+' '+title;
     return contextualMemory(current,allowed);
@@ -502,6 +502,7 @@ function PersonalApp() {
     if(!db) return;
     await db.withExclusiveTransactionAsync(async tx=>{
       await tx.runAsync('DELETE FROM memory_auto_grants WHERE id=?',item.id);
+      await tx.runAsync('DELETE FROM memory_auto_scoped_grants WHERE id=?',item.id);
       // Older previews still check memory version before sending.
       await tx.runAsync('UPDATE memory SET version=version+1 WHERE id=? AND version=?',item.id,item.version);
     });
@@ -637,8 +638,8 @@ function PersonalApp() {
         memory_version: (contextMemory??autoMemory)?.version ?? null};
       await db.runAsync('INSERT INTO outbox(id,prompt,route,url,created,memory_id,memory_version,thread_id,memory_auto) VALUES (?,?,?,?,?,?,?,?,?)',
         job.id, job.prompt, job.route, job.url, job.created, job.memory_id, job.memory_version, threadId, job.memory_auto??0);
-      const candidate = preferenceCandidate(prompt);
-      setPreference(candidate && !memories.some(item => item.kind === 'Preferência' && memoryKey(item.body) === memoryKey(candidate)) ? candidate : undefined);
+      const candidate = learningCandidate(prompt);
+      setLearning(candidate && !memories.some(item => item.kind === candidate.kind && memoryKey(item.body) === memoryKey(candidate.body)) ? candidate : undefined);
       setPrompt(''); setDismissedMemory(undefined); setProfileAttached(false);clearContext();
       nearEnd.current = true;
       await audit(db, 'Mensagem adicionada à fila');
@@ -835,7 +836,7 @@ function PersonalApp() {
 
   function openThread(id:string) {
     threadDrafts.current.set(threadId,prompt);setPrompt(threadDrafts.current.get(id)??'');
-    setProfileAttached(false);setThreadId(id);setThreadPanel(false);setChatQuery('');clearContext();nearEnd.current=true;
+    setLearning(undefined);setProfileAttached(false);setThreadId(id);setThreadPanel(false);setChatQuery('');clearContext();nearEnd.current=true;
   }
   async function saveThread(rename:boolean) {
     if(!db || !threadTitle.trim()) return;
@@ -1020,7 +1021,11 @@ function PersonalApp() {
     </View>;
   }
 
-  const priorityItems=prioritizeActions(github?.history??[],automation?.entries??[]);
+  const activeRepositories=new Set(github?.repos.filter(r=>r.state==='active'&&r.availability==='available').map(r=>r.id)??[]);
+  const allowedProjects=new Set(tracking?.enabled?tracking.projects.filter(p=>p.active===1&&(!p.status||p.status==='active')&&
+    automation?.grants.some(g=>g.project_id===p.id&&g.enabled===1)).map(p=>p.id):[]);
+  const priorityItems=prioritizeActions((github?.history??[]).filter(r=>github?.account?.state==='active'&&activeRepositories.has(r.repo)),
+    (automation?.entries??[]).filter(r=>allowedProjects.has(r.project_id)));
 
   function useInitiative(item: Initiative) {
     const result = automation?.entries.find(entry => entry.project_id === item.id && entry.cycle === (item.cycle ?? 0));
@@ -1088,6 +1093,27 @@ function PersonalApp() {
     const isReply = item.kind === 'reply';
     const content = isReply ? job.reply! : job.prompt;
     const jobLabel = job.state === 'uncertain' && job.recovery_state ? remoteStates[job.recovery_state] : job.state === 'queued' && connected === false ? 'Aguardando conexão' : labels[job.state];
+    function prepareReconsideration() {
+      if(prompt.trim()||context.trim()){
+        setNotice('Conclua ou limpe o rascunho atual antes de preparar a revisão.');
+        return;
+      }
+      const source=job.memory_id?memories.find(memory=>memory.id===job.memory_id):undefined;
+      if(job.memory_id&&(!source||source.private||source.version!==job.memory_version||
+        (job.memory_auto===1&&!autoGrants.some(g=>g.id===source.id&&g.version===source.version&&(g.thread_id===null||g.thread_id===threadId))))){
+        setNotice('A memória original mudou ou foi revogada. Escolha um novo contexto.');
+        return;
+      }
+      const previous='Pedido anterior:\n'+job.prompt+'\n\nResposta anterior:\n'+content;
+      if(previous.length>4000){
+        setNotice('A resposta e seu contexto excedem o limite seguro. Copie apenas os trechos que deseja revisar.');
+        return;
+      }
+      setContext(previous);setContextMemory(source);
+      setProfileAttached(false);
+      setPrompt('Reavalie a conclusão anterior. Confira fatos, premissas e alternativas; corrija erros e indique o que não foi possível verificar.');
+      setNotice('Revisão preparada. Confira o contexto e envie quando desejar.');
+    }
     function actions() {
       const copy = {text: 'Copiar', onPress: () => void perform(async () => { await Clipboard.setStringAsync(content); setNotice('Mensagem copiada.'); })};
       const cancel = {text: 'Cancelar', style: 'cancel' as const};
@@ -1129,6 +1155,8 @@ function PersonalApp() {
             onPress={() => confirm('Gerar outra resposta?', 'O texto e o contexto originais serão enviados novamente. Cada nova resposta usa uma tentativa.',
               () => regenerate(job))} style={s.inlineAction}>
             <Text style={s.link}>Gerar novamente</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={prepareReconsideration} style={s.inlineAction}>
+            <Text style={s.link}>Reavaliar</Text></Pressable>
           <Pressable accessibilityRole="button" onPress={()=>confirm('Compartilhar resposta?', 'O texto será entregue à opção que você escolher no painel do aparelho.',
             async()=>{await Share.share({message:content});})} style={s.inlineAction}><Text style={s.link}>Compartilhar</Text></Pressable>
         </View>}
@@ -1294,12 +1322,13 @@ function PersonalApp() {
                 await option('dismissed:' + suggestion.id, 'yes'); await audit(db, 'Sugestão dispensada'); await refresh(db);
               })} /></View>
             </View>}
-            {!!preference && <View style={s.card}>
-              <Text style={s.section}>Guardar esta preferência?</Text>
-              <Text style={s.text}>{preference}</Text>
+            {!!learning && <View style={s.card}>
+              <Text style={s.section}>Revisar aprendizado · {learning.kind}</Text>
+              <Text style={s.text}>{learning.body}</Text>
+              <Text style={s.muted}>Somente um rascunho local. Você decide o que guardar e autorizar.</Text>
               <View style={s.row}><Button label="Revisar e salvar" onPress={() => {
-                newMemory('Preferência', preference); setPreference(undefined);
-              }} /><Button label="Agora não" onPress={() => setPreference(undefined)} /></View>
+                newMemory(learning.kind, learning.body); setLearning(undefined);
+              }} /><Button label="Agora não" onPress={() => setLearning(undefined)} /></View>
             </View>}
             {suggestedMemory && <View style={s.card}>
               <Text style={s.kicker}>MEMÓRIA RELACIONADA · SÓ NESTE APARELHO</Text>
@@ -1391,13 +1420,16 @@ function PersonalApp() {
               setEdit(item); setBody(item.body); setKind(item.kind); setPrivateFlag(!!item.private); setEditor(true);
             }} />
             {!item.private && <Button label="Usar na conversa" onPress={() => useMemory(item)} />}
-            {!item.private && <Button label={autoGrants.some(g=>g.id===item.id&&g.version===item.version)?'Revogar automático':'Autorizar uso automático'} onPress={()=>{
-              const already=autoGrants.some(g=>g.id===item.id&&g.version===item.version);
-              if(already) void perform(()=>revokeAuto(item));
-              else confirm('Usar esta memória em contexto automaticamente?', 'O texto poderá acompanhar perguntas relevantes. Alterar a memória ou revogar a permissão interrompe o uso automático.',async()=>{
-                await db.runAsync('INSERT OR REPLACE INTO memory_auto_grants VALUES (?,?)',item.id,item.version);await refresh(db);
-              });
-            }}/>}
+            {!item.private && <>
+              {autoGrants.some(g=>g.id===item.id&&g.version===item.version) && <Button label="Revogar todos os usos automáticos" onPress={()=>
+                confirm('Revogar autorizações?', 'Todos os usos automáticos desta memória serão interrompidos, inclusive em outras conversas.',()=>revokeAuto(item))}/>}
+              {!autoGrants.some(g=>g.id===item.id&&g.version===item.version&&(g.thread_id===null||g.thread_id===threadId)) &&
+                <Button label="Autorizar nesta conversa" onPress={()=>confirm('Autorizar uso automático?', 'Conversa: '+(threads.find(t=>t.id===threadId)?.title??'Histórico principal')+'. O texto poderá acompanhar perguntas relevantes somente nesta conversa.',async()=>{
+                  const granted=await db.runAsync('INSERT OR REPLACE INTO memory_auto_scoped_grants(id,thread_id,version) SELECT ?,c.id,? FROM conversations c JOIN memory m ON m.id=? AND m.version=? AND m.private=0 WHERE c.id=? AND c.archived=0',item.id,item.version,item.id,item.version,threadId);
+                  if(!granted.changes)throw Error('A conversa ou a memória mudou. Confira antes de autorizar.');
+                  await refresh(db);
+                })}/>}
+            </>}
             <Button label="Excluir" onPress={() => confirm('Excluir memória?', 'A memória e o histórico local de alterações serão removidos.', () => removeMemory(item))} />
           </View>
         </View>)}

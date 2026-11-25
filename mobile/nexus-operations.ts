@@ -4,9 +4,14 @@ const auditStates=['AI_AUDIT','EVIDENCE_MISSING','READY_FOR_OWNER'];
 export function canReview(status:string,pr?:string|null){return !!pr&&syncStates.includes(status);}
 export async function reviewCycle<T extends Cursor>(initial:T,post:(cursor:T,type:'sync'|'audit')=>Promise<T>):Promise<T>{
   if(!syncStates.includes(initial.mission.status))throw Error('Esta missão não pode ser sincronizada.');
-  const next=await post(initial,'sync');
+  const verify=(previous:T,current:T)=>{
+    if(current.mission.id!==previous.mission.id||!Number.isSafeInteger(current.version)||current.version<=previous.version)
+      throw Error('Resposta de missão incompatível. Reabra a missão antes de continuar.');
+    return current;
+  };
+  const next=verify(initial,await post(initial,'sync'));
   if(!auditStates.includes(next.mission.status))return next;
-  return post(next,'audit');
+  return verify(next,await post(next,'audit'));
 }
 export function nextAction(status:string,pr?:string|null){
   if(status==='IDEA')return 'Conferir e confirmar o briefing.';
