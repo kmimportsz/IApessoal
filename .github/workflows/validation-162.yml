@@ -56,3 +56,27 @@ jobs:
         run: npm run check
       - name: Executar testes deterministas
         run: npm test
+  packaging:
+    name: Empacotamento Expo iOS e Android
+    if: github.base_ref == 'release/ipe-integrada' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Instalar dependencias sem alterar lockfile
+        run: npm ci --ignore-scripts
+      - name: Exportar bundles Expo sem assinar ou publicar
+        env:
+          CI: '1'
+          EXPO_NO_TELEMETRY: '1'
+        run: npx --no-install expo export --platform ios --platform android --output-dir dist-release-check
+      - name: Conferir arquivos realmente gerados
+        run: node ../scripts/check-expo-export.mjs dist-release-check
