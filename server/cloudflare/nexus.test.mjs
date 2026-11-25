@@ -60,3 +60,18 @@ test('Sincronizar apontamento novo invalida estado pronto mesmo no mesmo SHA',()
  assert.equal(result.ownerApproval,null);
  assert.equal(transition({...mission,remote:changed},{type:'sync'},changed,4).status,'READY_FOR_OWNER');
 });
+
+test('Segurança atual em andamento ou com apontamento impede aprovação',()=>{
+ let mission=audit();
+ const attest=(m,payload)=>transition(m,{type:'attest',payload:{commit:revision,status:'passed',url,reason:'Evidência revisada manualmente pelo proprietário.',...payload}},null,1);
+ for(const axis of ['objective','correctness','security','resilience','delivery'])mission=attest(mission,{axis});
+ mission=attest(mission,{criterion:'task'});
+ mission=attest(mission,{axis:'experience',dimensions,functionalUrl:url+'/actions',visualUrl:url+'/evidence'});
+ const ready=transition(mission,{type:'audit'},null,2);
+ for(const review of [{state:'running',commit:revision},{state:'completed',commit:revision,findings:true,unresolved:true}]){
+  const changed={...remote,repo:'owner/repo',prUrl:url+'/pull/2',codexSecurity:{...review,url:url+'/pull/2#issuecomment-1'}};
+  assert.equal(transition(ready,{type:'sync'},changed,3).status,'AI_AUDIT');
+  assert.equal(transition(ready,{type:'audit'},changed,3).status,'EVIDENCE_MISSING');
+  assert.throws(()=>transition(ready,{type:'approve',payload:{commit:revision}},changed,3));
+ }
+});
