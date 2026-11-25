@@ -41,3 +41,11 @@ node scripts/run-intelligence-case.mjs recover /caminho/privado/caso.json
 ```
 
 O primeiro comando grava o ID antes de enviar; o segundo apenas consulta o mesmo ID. Não reenvie em caso de falha incerta. A comparação de 10 casos em duas versões exige múltiplas janelas de cota; não elevar limites nem criar contas para contorná-los. O SHA declarado pelo operador não é uma atestação criptográfica do deploy.
+
+## Terceira etapa — validação e entrega rastreável
+- A execução 45523815216 (PR #17, cabeça f63ffebe6ff3f35ca1405c086af9f3b7ffbd5153) concluiu os três jobs: gateway, TypeScript/testes Expo e empacotamento. Os logs registraram bundles iOS (2.412.441 bytes) e Android (2.425.585 bytes). A revisão de código do Codex nesse SHA não indicou apontamentos. A revisão de segurança ainda não estava confirmada.
+- A candidata seguinte separa o recibo de revisão de segurança do recibo de revisão de código. Achados não resolvidos ou revisão de segurança atual em andamento bloqueiam o aceite. Ausência de recibo é explicitamente informada, nunca interpretada como revisão aprovada.
+- A exportação Expo passa a conservar artefato temporário com manifesto SHA-256 e distinção entre SHA do checkout e cabeça do PR. Não é uma build assinada nem uma prévia publicada.
+- O teste de integração do laboratório usa o gateway autenticado local, fila e recuperação de recibo com provedor simulado. Não é avaliação de inteligência do modelo real.
+
+Acesso Cloudflare: não alterar permissões, credenciais ou serviços para contornar falhas de conexão do plugin. A comparação real e a auditoria na instalação autorizada permanecem bloqueadas enquanto o acesso operacional não estiver confirmado. A publicação em produção e o teste físico final não estão autorizados nesta etapa.
