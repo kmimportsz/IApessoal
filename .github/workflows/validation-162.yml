@@ -79,4 +79,13 @@ jobs:
           EXPO_NO_TELEMETRY: '1'
         run: npx --no-install expo export --platform ios --platform android --output-dir dist-release-check
       - name: Conferir arquivos realmente gerados
+        env:
+          IPE_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node ../scripts/check-expo-export.mjs dist-release-check
+      - name: Preservar exportacao conferida sem deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipe-expo-export-${{ github.event.pull_request.head.sha || github.sha }}
+          path: mobile/dist-release-check/
+          if-no-files-found: error
+          retention-days: 3
